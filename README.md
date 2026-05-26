@@ -147,7 +147,7 @@ Can software rasterization enable mappings not feasible with fixed-function pipe
 
 Modern GPU software rasterization approaches such as Nanite have shown that small triangles can be competitive with, and sometimes outperform, traditional hardware rasterization.
 
-This work investigates whether shadow rendering is a favorable case due to its depth-only nature and minimal shading cost.
+This work investigates whether the cost of software rasterization can be offset by reducing shadow rendering complexity through a single shadow pass, reduced draw duplication and potentially lower memory usage.
 
 ---
 
