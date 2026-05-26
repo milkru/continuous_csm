@@ -50,14 +50,17 @@ or effectively:
 "infinite cascades"
 ```
 
+Removing discrete cascades may also reduce overlap and duplicate caster inclusion requirements present in traditional CSM implementations.
+
 Potential advantages:
 
 - One shadow pass
 - One shadow representation
 - No cascade transitions
+- No cascade overlap
 - Reduced duplicate rendering
 - Potentially lower memory usage
-- Continuous Nanite-style LOD behavior directly inside the shadow representation
+- Enables Nanite-style LOD behavior directly inside the shadow representation
 
 Traditional CSM approximates shadow LOD with a small number of discrete levels. This work investigates whether shadow resolution can instead become a continuous function.
 
