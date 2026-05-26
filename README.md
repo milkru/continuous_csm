@@ -6,6 +6,35 @@ The goal is to preserve the familiar behavior and controls of CSM while replacin
 
 ---
 
+## Setup
+
+Clone the repository:
+
+```bash
+git clone https://github.com/milkru/continuous_csm.git
+cd continuous_csm
+```
+
+Run the setup script:
+
+```bash
+py setup.py
+```
+
+The setup script will:
+
+- Initialize Git submodules recursively
+- Download LightweightVK dependencies
+- Download LightweightVK content/assets
+
+Generate the Visual Studio project:
+
+```bash
+cmake -S . -B build
+```
+
+---
+
 ## Motivation
 
 Traditional CSM improves shadow quality by splitting the camera frustum into multiple depth intervals:
