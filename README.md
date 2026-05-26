@@ -161,4 +161,3 @@ This work investigates whether the cost of software rasterization can be offset 
 - [Light Space Perspective Shadow Maps](https://www.cg.tuwien.ac.at/research/vr/lispsm/)
 - [Trapezoidal Shadow Maps](https://www.comp.nus.edu.sg/~tants/tsm.html)
 - [Nanite SIGGRAPH Presentation](https://advances.realtimerendering.com/s2021/index.html#_oci4k4s9u6rp)
-- [RetroWarp](https://github.com/Themaister/RetroWarp)
