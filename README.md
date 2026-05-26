@@ -56,11 +56,10 @@ Potential advantages:
 - One shadow representation
 - No cascade transitions
 - Reduced duplicate rendering
-- Continuous shadow LOD
 - Potentially lower memory usage
 - Continuous Nanite-style LOD behavior directly inside the shadow representation
 
-Traditional CSM approximates shadow LOD with a small number of discrete levels. This work investigates whether shadow resolution can instead become a continuous function, similar in spirit to Nanite-style continuous geometric LOD systems.
+Traditional CSM approximates shadow LOD with a small number of discrete levels. This work investigates whether shadow resolution can instead become a continuous function.
 
 ---
 
@@ -110,8 +109,6 @@ Previous shadow warping approaches were constrained by fixed-function rasterizat
 
 Compute/software rasterization removes this restriction and allows exploration of nonlinear shadow-space parameterizations not naturally representable by traditional pipelines.
 
-The goal is not a general software renderer. Only shadow depth generation is relevant.
-
 ---
 
 ## Continuous Parameters
@@ -130,7 +127,6 @@ Continuous CSM could replace these with:
 bias(depth)
 slope_bias(depth)
 filter_radius(depth)
-density(depth)
 ```
 
 allowing continuous behavior while preserving familiar tuning controls.
@@ -141,13 +137,7 @@ allowing continuous behavior while preserving familiar tuning controls.
 
 ### Projection
 
-Can a nonlinear shadow parameterization preserve:
-
-- Directional light visibility
-- Stable texel distribution
-- Robustness
-- Smooth transitions
-- Practical filtering
+Can a nonlinear shadow parameterization preserve directional light visibility, stable texel distribution, robustness, smooth transitions and practical filtering?
 
 ### Rasterization
 
@@ -155,23 +145,9 @@ Can software rasterization enable mappings not feasible with fixed-function pipe
 
 ### Performance
 
-Modern GPU software rasterization approaches such as Nanite have shown that small triangles can outperform traditional hardware rasterization under certain workloads.
+Modern GPU software rasterization approaches such as Nanite have shown that small triangles can be competitive with, and sometimes outperform, traditional hardware rasterization.
 
-Shadow rendering is a particularly favorable case:
-
-- Depth only
-- Minimal interpolation
-- Aggressive culling potential
-- Many small triangles
-
-Can:
-
-- One shadow pass
-- Fewer draw calls
-- No cascade duplication
-- Smaller memory footprint
-
-offset software rasterization cost?
+This work investigates whether shadow rendering is a favorable case due to its depth-only nature and minimal shading cost.
 
 ---
 
