@@ -60,7 +60,8 @@ Potential advantages:
 - No cascade overlap
 - Reduced duplicate rendering
 - Potentially lower memory usage
-- Enables Nanite-style LOD behavior directly inside the shadow representation
+- Enables Nanite-style LOD behavior directly inside the shadow
+- Enables async compute overlap with main view rendering
 
 Traditional CSM approximates shadow LOD with a small number of discrete levels. This work investigates whether shadow resolution can instead become a continuous function.
 
