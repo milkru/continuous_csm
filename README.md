@@ -2,7 +2,7 @@
 
 Research project investigating a continuous alternative to traditional Cascaded Shadow Maps (CSM) using compute/software rasterization.
 
-The project uses LightweightVK as a lightweight Vulkan framework for rapid iteration and experimentation.
+The project uses [LightweightVK](https://github.com/corporateshark/lightweightvk) as the rendering framework and experimentation platform.
 
 The goal is to preserve the familiar behavior and controls of CSM while replacing its discrete cascade representation with a continuous shadow parameterization.
 
