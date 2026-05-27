@@ -1,3 +1,15 @@
 [submodule "3rdparty/lightweightvk"]
 	path = 3rdparty/lightweightvk
 	url = https://github.com/corporateshark/lightweightvk.git
+[submodule "3rdparty/fast_obj"]
+	path = 3rdparty/fast_obj
+	url = https://github.com/thisistherk/fast_obj.git
+[submodule "3rdparty/meshoptimizer"]
+	path = 3rdparty/meshoptimizer
+	url = https://github.com/zeux/meshoptimizer.git
+[submodule "3rdparty/stb"]
+	path = 3rdparty/stb
+	url = https://github.com/nothings/stb.git
+[submodule "3rdparty/taskflow"]
+	path = 3rdparty/taskflow
+	url = https://github.com/taskflow/taskflow.git

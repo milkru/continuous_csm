@@ -14,3 +14,5 @@ AllowShortBlocksOnASingleLine: Never
 AllowShortIfStatementsOnASingleLine: Never
 AllowShortLoopsOnASingleLine: false
 SpacesBeforeTrailingComments: 2
+Cpp11BracedListStyle: false
+SeparateDefinitionBlocks: Always
