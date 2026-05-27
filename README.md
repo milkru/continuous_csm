@@ -125,13 +125,13 @@ This work investigates whether software rasterization cost can be offset through
 
 ## Progress
 
-- [x] Setup repository, LightweightVK and build system
-- [ ] Render a test scene (Bistro/Sponza or similar)
-- [ ] Implement baseline shadow mapping
-- [ ] Extend baseline shadow mapping to CSM
-- [ ] Implement continuous shadow parameterization using hardware rasterization
-- [ ] Integrate software rasterization
-- [ ] Compare against traditional CSM
+✅ Setup repository, LightweightVK and build system  
+⬜ Render a test scene (Bistro/Sponza or similar)  
+⬜ Implement baseline shadow mapping  
+⬜ Extend baseline shadow mapping to CSM  
+⬜ Implement continuous shadow parameterization using hardware rasterization  
+⬜ Integrate software rasterization  
+⬜ Compare against traditional CSM
 
 ---
 
