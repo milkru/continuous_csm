@@ -2,6 +2,8 @@
 
 Research project investigating a continuous alternative to traditional Cascaded Shadow Maps (CSM) using compute/software rasterization.
 
+The project uses LightweightVK as a lightweight Vulkan framework for rapid iteration and experimentation.
+
 The goal is to preserve the familiar behavior and controls of CSM while replacing its discrete cascade representation with a continuous shadow parameterization.
 
 ---
@@ -17,38 +19,27 @@ Cascade 2
 Cascade 3: far
 ```
 
-Each cascade renders a separate orthographic shadow map with different world-space coverage and effective texel density.
+Each cascade renders a separate orthographic shadow map with different world-space coverage and texel density.
 
 This works well but introduces several drawbacks:
 
 - Multiple shadow rendering passes
-- Duplicate rendering of nearby objects across cascades
+- Duplicate rendering across cascades
 - Increased draw submission cost
-- Cascade transition artifacts
-- Per-cascade stabilization logic
-- Per-cascade tuning (bias, slope bias, filtering)
+- Visible cascade transitions
+- Per-cascade tuning
 - Additional memory overhead
 
-CSM already defines the desired texel density distribution:
+CSM already describes the desired texel density distribution:
 
 ```text
 near camera -> high density
 far camera -> low density
 ```
 
-but approximates it using several discrete levels.
+but approximates it using a small number of discrete levels.
 
-This project investigates replacing those discrete steps with a continuous representation:
-
-```text
-continuous_density(depth)
-```
-
-or effectively:
-
-```text
-"infinite cascades"
-```
+This project investigates replacing those discrete levels with a continuous representation, effectively creating "infinite cascades".
 
 Removing discrete cascades may also reduce overlap and duplicate caster inclusion requirements present in traditional CSM implementations.
 
@@ -57,13 +48,11 @@ Potential advantages:
 - One shadow pass
 - One shadow representation
 - No cascade transitions
-- No cascade overlap
-- Reduced duplicate rendering
+- Reduced overlap and duplicate caster rendering
+- Reduced draw submission overhead
 - Potentially lower memory usage
-- Enables Nanite-style LOD behavior directly inside the shadow
+- Enables continuous Nanite-style LOD behavior inside the shadow representation
 - Enables async compute overlap with main view rendering
-
-Traditional CSM approximates shadow LOD with a small number of discrete levels. This work investigates whether shadow resolution can instead become a continuous function.
 
 ---
 
@@ -73,8 +62,7 @@ Keep the same conceptual setup as CSM:
 
 - Directional light
 - Camera-frustum driven allocation
-- Split controls
-- Familiar tuning workflow
+- Familiar split controls and tuning workflow
 
 Internally replace:
 
@@ -97,27 +85,11 @@ Conceptually:
 150-500m   very low density
 ```
 
-becomes:
+becomes a continuous density function instead of several discrete regions.
 
-```text
-continuous_density(depth)
-```
+The intention is to preserve the existing CSM workflow and potentially expose nearly identical controls externally while changing only the internal representation.
 
-The idea is to preserve existing CSM workflows and potentially even expose identical controls externally while changing only the internal representation.
-
----
-
-## Why Software Rasterization?
-
-Previous shadow warping approaches were constrained by fixed-function rasterization and projective transforms.
-
-Compute/software rasterization removes this restriction and allows exploration of nonlinear shadow-space parameterizations not naturally representable by traditional pipelines.
-
----
-
-## Continuous Parameters
-
-Traditional CSM often exposes per-cascade settings:
+Traditional CSM parameters such as:
 
 ```cpp
 bias[cascade]
@@ -125,7 +97,7 @@ slope_bias[cascade]
 filter_radius[cascade]
 ```
 
-Continuous CSM could replace these with:
+could potentially become:
 
 ```cpp
 bias(depth)
@@ -137,21 +109,17 @@ allowing continuous behavior while preserving familiar tuning controls.
 
 ---
 
-## Research Questions
+## Why Software Rasterization?
 
-### Projection
+Previous warped shadow techniques such as Perspective Shadow Maps, Light Space Perspective Shadow Maps and Trapezoidal Shadow Maps were constrained by fixed function hardware rasterization.
 
-Can a nonlinear shadow parameterization preserve directional light visibility, stable texel distribution, robustness, smooth transitions and practical filtering?
+Hardware rasterization assumes projected triangle edges remain linear. More aggressive nonlinear parameterizations may produce curved projections that are not naturally representable by traditional pipelines.
 
-### Rasterization
+Compute/software rasterization removes this restriction and potentially allows exploration of a much larger space of shadow parameterizations.
 
-Can software rasterization enable mappings not feasible with fixed-function pipelines?
+Modern GPU software rasterization approaches such as Nanite have also shown that small triangles can be competitive with, and sometimes outperform, traditional hardware rasterization.
 
-### Performance
-
-Modern GPU software rasterization approaches such as Nanite have shown that small triangles can be competitive with, and sometimes outperform, traditional hardware rasterization.
-
-This work investigates whether the cost of software rasterization can be offset by reducing shadow rendering complexity through a single shadow pass, reduced draw duplication and potentially lower memory usage.
+This work investigates whether software rasterization cost can be offset through a single shadow pass, reduced draw duplication and a more compact shadow representation.
 
 ---
 
