@@ -29,7 +29,7 @@
 #include "utils.h"
 
 constexpr bool kPreferIntegratedGPU = false;
-constexpr glm::vec4 kAmbientColor   = glm::vec4(0.82f, 0.92f, 0.98f, 1.0f);
+constexpr glm::vec4 kAmbientColor = glm::vec4(0.82f, 0.92f, 0.98f, 1.0f);
 
 #if defined(NDEBUG)
 constexpr bool kEnableValidationLayers = false;
@@ -37,7 +37,7 @@ constexpr bool kEnableValidationLayers = false;
 constexpr bool kEnableValidationLayers = true;
 #endif
 
-int32_t width_  = 0;
+int32_t width_ = 0;
 int32_t height_ = 0;
 
 std::unique_ptr<lvk::IContext> ctx_;
@@ -48,7 +48,7 @@ std::string folderContentRoot;
 lvk::Holder<lvk::QueryPoolHandle> queryPoolTimestamps_;
 uint64_t pipelineTimestamps[GPUTimestamp_NUM_TIMESTAMPS] = {};
 double timestampBeginRendering = 0;
-double timestampEndRendering   = 0;
+double timestampEndRendering = 0;
 
 lvk::Framebuffer fbMain_;
 lvk::Framebuffer fbOffscreen_;
@@ -88,11 +88,11 @@ lvk::DepthState depthState_;
 lvk::DepthState depthStateLEqual_;
 
 Camera camera_(glm::vec3(-100, 40, -47), glm::vec3(0, 35, 0), glm::vec3(0, 1, 0));
-glm::vec2 mousePos_    = glm::vec2(0.0f);
-bool mousePressed_     = false;
-bool enableWireframe_  = false;
-bool showPerfStats_    = true;
-bool drawNormals_      = false;
+glm::vec2 mousePos_ = glm::vec2(0.0f);
+bool mousePressed_ = false;
+bool enableWireframe_ = false;
+bool showPerfStats_ = true;
+bool drawNormals_ = false;
 bool isShadowMapDirty_ = true;
 
 struct UniformsPerFrame
@@ -100,10 +100,10 @@ struct UniformsPerFrame
 	glm::mat4 proj;
 	glm::mat4 view;
 	glm::mat4 light;
-	uint32_t texShadow     = 0;
-	uint32_t sampler       = 0;
+	uint32_t texShadow = 0;
+	uint32_t sampler = 0;
 	uint32_t samplerShadow = 0;
-	uint32_t padding0      = 0;
+	uint32_t padding0 = 0;
 	glm::vec4 ambientColor = kAmbientColor;
 } perFrame_;
 
@@ -153,7 +153,7 @@ bool init(lvk::LVKwindow* window)
 	    .debugName = "Buffer: uniforms (per object)",
 	});
 
-	depthState_       = { .compareOp = lvk::CompareOp_Less, .isDepthWriteEnabled = true };
+	depthState_ = { .compareOp = lvk::CompareOp_Less, .isDepthWriteEnabled = true };
 	depthStateLEqual_ = { .compareOp = lvk::CompareOp_LessEqual, .isDepthWriteEnabled = true };
 
 	sampler_ = ctx_->createSampler({
@@ -183,17 +183,17 @@ bool init(lvk::LVKwindow* window)
 	    },
 	};
 	renderPassMain_ = {
-	    .color = { { .loadOp = lvk::LoadOp_Clear,
-	                .storeOp = lvk::StoreOp_Store,
-	                .clearColor = { 0.0f, 0.0f, 0.0f, 1.0f } } },
+		.color = { { .loadOp = lvk::LoadOp_Clear,
+		             .storeOp = lvk::StoreOp_Store,
+		             .clearColor = { 0.0f, 0.0f, 0.0f, 1.0f } } },
 	};
 	renderPassShadow_ = {
-	    .color = {},
-	    .depth = { .loadOp = lvk::LoadOp_Clear, .storeOp = lvk::StoreOp_Store, .clearDepth = 1.0f },
+		.color = {},
+		.depth = { .loadOp = lvk::LoadOp_Clear, .storeOp = lvk::StoreOp_Store, .clearDepth = 1.0f },
 	};
 
 	fbMain_ = {
-	    .color = { { .texture = ctx_->getCurrentSwapchainTexture() } },
+		.color = { { .texture = ctx_->getCurrentSwapchainTexture() } },
 	};
 
 	createShadowMap();
@@ -220,36 +220,36 @@ void destroy()
 {
 	imgui_ = nullptr;
 
-	vb0_              = nullptr;
-	ib0_              = nullptr;
-	sbMaterials_      = nullptr;
-	ubPerFrame_       = nullptr;
+	vb0_ = nullptr;
+	ib0_ = nullptr;
+	sbMaterials_ = nullptr;
+	ubPerFrame_ = nullptr;
 	ubPerFrameShadow_ = nullptr;
-	ubPerObject_      = nullptr;
-	smMeshVert_           = nullptr;
-	smMeshFrag_           = nullptr;
-	smMeshWireframeVert_  = nullptr;
-	smMeshWireframeFrag_  = nullptr;
-	smShadowVert_         = nullptr;
-	smShadowFrag_         = nullptr;
-	smFullscreenVert_     = nullptr;
-	smFullscreenFrag_     = nullptr;
-	renderPipelineState_Mesh_          = nullptr;
-	renderPipelineState_MeshNormals_   = nullptr;
+	ubPerObject_ = nullptr;
+	smMeshVert_ = nullptr;
+	smMeshFrag_ = nullptr;
+	smMeshWireframeVert_ = nullptr;
+	smMeshWireframeFrag_ = nullptr;
+	smShadowVert_ = nullptr;
+	smShadowFrag_ = nullptr;
+	smFullscreenVert_ = nullptr;
+	smFullscreenFrag_ = nullptr;
+	renderPipelineState_Mesh_ = nullptr;
+	renderPipelineState_MeshNormals_ = nullptr;
 	renderPipelineState_MeshWireframe_ = nullptr;
-	renderPipelineState_Shadow_        = nullptr;
-	renderPipelineState_Fullscreen_    = nullptr;
+	renderPipelineState_Shadow_ = nullptr;
+	renderPipelineState_Fullscreen_ = nullptr;
 	textureDummyWhite_ = nullptr;
 	textures_.clear();
 	texturesCache_.clear();
-	sampler_       = nullptr;
+	sampler_ = nullptr;
 	samplerShadow_ = nullptr;
 	ctx_->destroy(fbMain_);
 	ctx_->destroy(fbShadowMap_);
-	fbOffscreenColor_    = nullptr;
-	fbOffscreenDepth_    = nullptr;
+	fbOffscreenColor_ = nullptr;
+	fbOffscreenDepth_ = nullptr;
 	queryPoolTimestamps_ = nullptr;
-	ctx_                 = nullptr;
+	ctx_ = nullptr;
 
 	printf("Waiting for the loader thread to exit...\n");
 	loaderPool_ = nullptr;
@@ -274,8 +274,8 @@ void createPipelines()
 	};
 
 	const lvk::VertexInput vdescs = {
-	    .attributes = { { .format = lvk::VertexFormat_Float3, .offset = offsetof(VertexData, position) } },
-	    .inputBindings = { { .stride = sizeof(VertexData) } },
+		.attributes = { { .format = lvk::VertexFormat_Float3, .offset = offsetof(VertexData, position) } },
+		.inputBindings = { { .stride = sizeof(VertexData) } },
 	};
 
 	smMeshVert_ = ctx_->createShaderModule({ kCodeVS, lvk::Stage_Vert, "Shader Module: main (vert)" });
@@ -293,14 +293,14 @@ void createPipelines()
 
 	{
 		lvk::RenderPipelineDesc desc = {
-		    .vertexInput = vdesc,
-		    .smVert = smMeshVert_,
-		    .smFrag = smMeshFrag_,
-		    .color = { { .format = ctx_->getFormat(fbOffscreen_.color[0].texture) } },
-		    .depthFormat = ctx_->getFormat(fbOffscreen_.depthStencil.texture),
-		    .cullMode = lvk::CullMode_Back,
-		    .frontFace = lvk::WindingMode_CCW,
-		    .debugName = "Pipeline: mesh",
+			.vertexInput = vdesc,
+			.smVert = smMeshVert_,
+			.smFrag = smMeshFrag_,
+			.color = { { .format = ctx_->getFormat(fbOffscreen_.color[0].texture) } },
+			.depthFormat = ctx_->getFormat(fbOffscreen_.depthStencil.texture),
+			.cullMode = lvk::CullMode_Back,
+			.frontFace = lvk::WindingMode_CCW,
+			.debugName = "Pipeline: mesh",
 		};
 		renderPipelineState_Mesh_ = ctx_->createRenderPipeline(desc, nullptr);
 
@@ -310,12 +310,12 @@ void createPipelines()
 			              .dataSize = sizeof(drawNormals) };
 		renderPipelineState_MeshNormals_ = ctx_->createRenderPipeline(desc, nullptr);
 
-		desc.specInfo    = {};
+		desc.specInfo = {};
 		desc.polygonMode = lvk::PolygonMode_Line;
 		desc.vertexInput = vdescs;
-		desc.smVert      = smMeshWireframeVert_;
-		desc.smFrag      = smMeshWireframeFrag_;
-		desc.debugName   = "Pipeline: mesh (wireframe)";
+		desc.smVert = smMeshWireframeVert_;
+		desc.smFrag = smMeshWireframeFrag_;
+		desc.debugName = "Pipeline: mesh (wireframe)";
 		renderPipelineState_MeshWireframe_ = ctx_->createRenderPipeline(desc, nullptr);
 	}
 
@@ -332,12 +332,12 @@ void createPipelines()
 
 	{
 		const lvk::RenderPipelineDesc desc = {
-		    .smVert = smFullscreenVert_,
-		    .smFrag = smFullscreenFrag_,
-		    .color = { { .format = ctx_->getFormat(fbMain_.color[0].texture) } },
-		    .depthFormat = ctx_->getFormat(fbMain_.depthStencil.texture),
-		    .cullMode = lvk::CullMode_None,
-		    .debugName = "Pipeline: fullscreen",
+			.smVert = smFullscreenVert_,
+			.smFrag = smFullscreenFrag_,
+			.color = { { .format = ctx_->getFormat(fbMain_.color[0].texture) } },
+			.depthFormat = ctx_->getFormat(fbMain_.depthStencil.texture),
+			.cullMode = lvk::CullMode_None,
+			.debugName = "Pipeline: fullscreen",
 		};
 		renderPipelineState_Fullscreen_ = ctx_->createRenderPipeline(desc, nullptr);
 	}
@@ -348,15 +348,15 @@ void createShadowMap()
 	const uint32_t w = 4096;
 	const uint32_t h = 4096;
 	const lvk::TextureDesc desc = {
-	    .type = lvk::TextureType_2D,
-	    .format = lvk::Format_Z_UN16,
-	    .dimensions = { w, h },
-	    .usage = lvk::TextureUsageBits_Attachment | lvk::TextureUsageBits_Sampled,
-	    .numMipLevels = lvk::calcNumMipLevels(w, h),
-	    .debugName = "Shadow map",
+		.type = lvk::TextureType_2D,
+		.format = lvk::Format_Z_UN16,
+		.dimensions = { w, h },
+		.usage = lvk::TextureUsageBits_Attachment | lvk::TextureUsageBits_Sampled,
+		.numMipLevels = lvk::calcNumMipLevels(w, h),
+		.debugName = "Shadow map",
 	};
 	fbShadowMap_ = {
-	    .depthStencil = { .texture = ctx_->createTexture(desc).release() },
+		.depthStencil = { .texture = ctx_->createTexture(desc).release() },
 	};
 }
 
@@ -366,27 +366,27 @@ void createOffscreenFramebuffer()
 	const uint32_t h = (uint32_t)height_;
 
 	const lvk::TextureDesc descColor = {
-	    .type = lvk::TextureType_2D,
-	    .format = lvk::Format_RGBA_UN8,
-	    .dimensions = { w, h },
-	    .usage = lvk::TextureUsageBits_Attachment | lvk::TextureUsageBits_Sampled | lvk::TextureUsageBits_Storage,
-	    .numMipLevels = lvk::calcNumMipLevels(w, h),
-	    .debugName = "Offscreen framebuffer (color)",
+		.type = lvk::TextureType_2D,
+		.format = lvk::Format_RGBA_UN8,
+		.dimensions = { w, h },
+		.usage = lvk::TextureUsageBits_Attachment | lvk::TextureUsageBits_Sampled | lvk::TextureUsageBits_Storage,
+		.numMipLevels = lvk::calcNumMipLevels(w, h),
+		.debugName = "Offscreen framebuffer (color)",
 	};
 	const lvk::TextureDesc descDepth = {
-	    .type = lvk::TextureType_2D,
-	    .format = lvk::Format_Z_UN24,
-	    .dimensions = { w, h },
-	    .usage = lvk::TextureUsageBits_Attachment | lvk::TextureUsageBits_Sampled,
-	    .numMipLevels = lvk::calcNumMipLevels(w, h),
-	    .debugName = "Offscreen framebuffer (depth)",
+		.type = lvk::TextureType_2D,
+		.format = lvk::Format_Z_UN24,
+		.dimensions = { w, h },
+		.usage = lvk::TextureUsageBits_Attachment | lvk::TextureUsageBits_Sampled,
+		.numMipLevels = lvk::calcNumMipLevels(w, h),
+		.debugName = "Offscreen framebuffer (depth)",
 	};
 
 	fbOffscreenColor_ = ctx_->createTexture(descColor);
 	fbOffscreenDepth_ = ctx_->createTexture(descDepth);
 	fbOffscreen_ = {
-	    .color = { { .texture = fbOffscreenColor_ } },
-	    .depthStencil = { .texture = fbOffscreenDepth_ },
+		.color = { { .texture = fbOffscreenColor_ } },
+		.depthStencil = { .texture = fbOffscreenDepth_ },
 	};
 }
 
@@ -413,13 +413,13 @@ void render(double delta)
 	{
 		imgui_->beginFrame(fbMain_);
 
-		ImGui::Begin("Keyboard hints:", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNavInputs);
-		ImGui::Text("W/S/A/D - camera movement");
-		ImGui::Text("Q/E - camera up/down");
-		ImGui::Text("Shift - fast movement");
-		ImGui::Text("N - toggle normals");
-		ImGui::Text("T - toggle wireframe");
-		ImGui::Text("P - show perf stats");
+		ImGui::Begin("Keyboard Hints:", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNavInputs);
+		ImGui::Text("W/S/A/D - Camera Movement");
+		ImGui::Text("Q/E - Camera Up/Down");
+		ImGui::Text("Shift - Fast Movement");
+		ImGui::Text("N - Toggle Normals");
+		ImGui::Text("T - Toggle Wireframe");
+		ImGui::Text("P - Show Performance Stats");
 		ImGui::End();
 
 		if (uint32_t num = remainingMaterialsToLoad_.load(std::memory_order_acquire))
@@ -441,7 +441,7 @@ void render(double delta)
 
 	timestampBeginRendering = glfwGetTime();
 
-	const float fov         = float(45.0f * (M_PI / 180.0f));
+	const float fov = float(45.0f * (M_PI / 180.0f));
 	const float aspectRatio = (float)width_ / (float)height_;
 
 	const glm::mat4 shadowProj = glm::perspective(float(60.0f * (M_PI / 180.0f)), 1.0f, 10.0f, 4000.0f);
@@ -453,18 +453,18 @@ void render(double delta)
 	    glm::mat4(0.5, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.5, 0.0, 1.0);
 
 	perFrame_ = UniformsPerFrame{
-	    .proj = glm::perspective(fov, aspectRatio, 0.5f, 500.0f),
-	    .view = camera_.getViewMatrix(),
-	    .light = scaleBias * shadowProj * shadowView,
-	    .texShadow = fbShadowMap_.depthStencil.texture.index(),
-	    .sampler = sampler_.index(),
-	    .samplerShadow = samplerShadow_.index(),
+		.proj = glm::perspective(fov, aspectRatio, 0.5f, 500.0f),
+		.view = camera_.getViewMatrix(),
+		.light = scaleBias * shadowProj * shadowView,
+		.texShadow = fbShadowMap_.depthStencil.texture.index(),
+		.sampler = sampler_.index(),
+		.samplerShadow = samplerShadow_.index(),
 	};
 
-	const glm::mat4 modelMatrix      = glm::scale(glm::mat4(1.0f), glm::vec3(0.05f));
+	const glm::mat4 modelMatrix = glm::scale(glm::mat4(1.0f), glm::vec3(0.05f));
 	const UniformsPerObject perObject = {
-	    .model = modelMatrix,
-	    .normal = glm::transpose(glm::inverse(modelMatrix)),
+		.model = modelMatrix,
+		.normal = glm::transpose(glm::inverse(modelMatrix)),
 	};
 
 	lvk::ICommandBuffer& buffer = ctx_->acquireCommandBuffer();
@@ -478,8 +478,8 @@ void render(double delta)
 	if (isShadowMapDirty_)
 	{
 		const UniformsPerFrame perFrameShadow{
-		    .proj = shadowProj,
-		    .view = shadowView,
+			.proj = shadowProj,
+			.view = shadowView,
 		};
 		buffer.cmdUpdateBuffer(ubPerFrameShadow_, 0, sizeof(perFrameShadow), &perFrameShadow);
 		buffer.cmdBeginRendering(renderPassShadow_, fbShadowMap_);
@@ -494,8 +494,8 @@ void render(double delta)
 				uint64_t perFrame;
 				uint64_t perObject;
 			} bindings = {
-			    .perFrame = ctx_->gpuAddress(ubPerFrameShadow_),
-			    .perObject = ctx_->gpuAddress(ubPerObject_),
+				.perFrame = ctx_->gpuAddress(ubPerFrameShadow_),
+				.perObject = ctx_->gpuAddress(ubPerObject_),
 			};
 
 			buffer.cmdPushConstants(bindings);
@@ -529,9 +529,9 @@ void render(double delta)
 				uint64_t perObject;
 				uint64_t materials;
 			} bindings = {
-			    .perFrame = ctx_->gpuAddress(ubPerFrame_),
-			    .perObject = ctx_->gpuAddress(ubPerObject_),
-			    .materials = ctx_->gpuAddress(sbMaterials_),
+				.perFrame = ctx_->gpuAddress(ubPerFrame_),
+				.perObject = ctx_->gpuAddress(ubPerObject_),
+				.materials = ctx_->gpuAddress(sbMaterials_),
 			};
 
 			buffer.cmdPushConstants(bindings);
@@ -564,7 +564,7 @@ void render(double delta)
 			{
 				uint32_t texture;
 			} bindings = {
-			    .texture = tex.index(),
+				.texture = tex.index(),
 			};
 
 			buffer.cmdPushConstants(bindings);
@@ -591,13 +591,11 @@ void render(double delta)
 	}
 }
 
-GLFWkeyfun g_PrevKeyCallback                = nullptr;
+GLFWkeyfun g_PrevKeyCallback = nullptr;
 GLFWmousebuttonfun g_PrevMouseButtonCallback = nullptr;
 
 int main(int argc, char* argv[])
 {
-	camera_.maxSpeed_ = 75.0f;
-
 #if defined(LVK_WITH_MINILOG)
 	minilog::initialize(nullptr, { .threadNames = false });
 #endif
@@ -616,7 +614,7 @@ int main(int argc, char* argv[])
 			LVK_ASSERT(false);
 			return EXIT_FAILURE;
 		}
-		folderThirdParty  = (dir / path("3rdparty/lightweightvk/third-party/deps/src/")).string();
+		folderThirdParty = (dir / path("3rdparty/lightweightvk/third-party/deps/src/")).string();
 		folderContentRoot = (dir / subdir).string();
 	}
 
@@ -642,7 +640,7 @@ int main(int argc, char* argv[])
 	glfwSetFramebufferSizeCallback(window,
 	                               [](GLFWwindow*, int32_t w, int32_t h)
 	                               {
-		                               width_  = w;
+		                               width_ = w;
 		                               height_ = h;
 		                               resize();
 	                               });
@@ -750,7 +748,7 @@ int main(int argc, char* argv[])
 		glfwPollEvents();
 
 		const double newTime = glfwGetTime();
-		const double delta   = newTime - prevTime;
+		const double delta = newTime - prevTime;
 		prevTime = newTime;
 
 		if (!width_ || !height_)
@@ -766,5 +764,5 @@ int main(int argc, char* argv[])
 	glfwDestroyWindow(window);
 	glfwTerminate();
 
-	return 0;
+	return EXIT_SUCCESS;
 }

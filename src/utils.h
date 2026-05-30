@@ -1,7 +1,5 @@
 #pragma once
 
-// ---- RAII scope guard -------------------------------------------------------
-
 template <typename F> struct ScopeExit_
 {
 	F fn_;
@@ -16,8 +14,6 @@ template <typename F> ScopeExit_<F> operator+(ScopeExitHelper_, F&& fn)
 }
 
 #define SCOPE_EXIT auto _se_##__LINE__ = ScopeExitHelper_{} + [&]() noexcept
-
-// ---- Normal / snorm packing -------------------------------------------------
 
 inline glm::vec2 msign(glm::vec2 v)
 {

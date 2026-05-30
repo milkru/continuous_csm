@@ -126,7 +126,7 @@ class Camera
 	float mouseSpeed_ = 4.0f;
 	float acceleration_ = 150.0f;
 	float damping_ = 0.2f;
-	float maxSpeed_ = 10.0f;
+	float maxSpeed_ = 750.0f;
 	float fastCoef_ = 10.0f;
 
   private:

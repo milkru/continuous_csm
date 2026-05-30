@@ -78,7 +78,6 @@ std::string normalizeTextureName(const char* n)
 	return name;
 }
 
-
 bool loadAndCache(const char* cacheFileName)
 {
 	LLOGL("Loading `exterior.obj`... It can take a while in debug builds...\n");
