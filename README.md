@@ -12,13 +12,11 @@ The goal is to preserve the familiar behavior and controls of CSM while replacin
 
 **Prerequisites:** CMake 3.22+, Python 3, Vulkan SDK
 
-Run once before first build (downloads dependencies and content, generates the VS solution):
+Run once before first build:
 
 ```bat
 setup.bat
 ```
-
-Then open `build/continuous_csm.sln` in Visual Studio 2022 and build.
 
 ---
 
