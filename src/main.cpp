@@ -3,6 +3,7 @@
 #endif
 
 #include <atomic>
+#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -470,6 +471,9 @@ void render(double delta)
 	const glm::vec3 lightDir = kLightDir;
 	const glm::mat4 invCam = glm::inverse(proj * view);
 	const glm::mat4 scaleBias(0.5, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.5, 0.0, 1.0);
+	const glm::mat4 modelMatrix = glm::scale(glm::mat4(1.0f), glm::vec3(0.05f));
+	const glm::vec3 worldAABBMin = glm::vec3(modelMatrix * glm::vec4(sceneAABBMin_, 1.0f));
+	const glm::vec3 worldAABBMax = glm::vec3(modelMatrix * glm::vec4(sceneAABBMax_, 1.0f));
 
 	float cascadeSplits[kNumCascades];
 	{
@@ -520,8 +524,27 @@ void render(double delta)
 			radius = glm::max(radius, glm::length(frustumCorners[j] - center));
 		radius = std::ceil(radius * 16.0f) / 16.0f;
 
-		shadowViews[i] = glm::lookAt(center - lightDir * radius, center, glm::vec3(0.0f, 1.0f, 0.0f));
-		shadowProjs[i] = glm::ortho(-radius, radius, -radius, radius, 0.0f, 2.0f * radius);
+		// Project scene AABB corners onto the light direction to get tight depth bounds
+		float minFwd = FLT_MAX, maxFwd = -FLT_MAX;
+		for (uint32_t j = 0; j < 8; j++)
+		{
+			const glm::vec3 corner = {
+				(j & 1) ? worldAABBMax.x : worldAABBMin.x,
+				(j & 2) ? worldAABBMax.y : worldAABBMin.y,
+				(j & 4) ? worldAABBMax.z : worldAABBMin.z,
+			};
+			const float fwd = glm::dot(corner - center, lightDir);
+			minFwd = glm::min(minFwd, fwd);
+			maxFwd = glm::max(maxFwd, fwd);
+		}
+
+		// eyeDist: far enough back to see the most upstream caster (toward sun)
+		// depthRange: enough to reach the most downstream caster (into scene)
+		const float eyeDist = glm::max(radius, -minFwd);
+		const float depthRange = maxFwd + eyeDist;
+
+		shadowViews[i] = glm::lookAt(center - lightDir * eyeDist, center, glm::vec3(0.0f, 1.0f, 0.0f));
+		shadowProjs[i] = glm::ortho(-radius, radius, -radius, radius, 0.0f, depthRange);
 
 		perFrame_.cascadeLightMatrices[i] = scaleBias * shadowProjs[i] * shadowViews[i];
 		perFrame_.cascadeSplitDepths[i] = -(nearClip + splitDist * clipRange);
@@ -536,7 +559,6 @@ void render(double delta)
 	perFrame_.samplerShadow = samplerShadow_.index();
 	perFrame_.ambientColor = kAmbientColor;
 
-	const glm::mat4 modelMatrix = glm::scale(glm::mat4(1.0f), glm::vec3(0.05f));
 	const UniformsPerObject perObject = {
 		.model = modelMatrix,
 		.normal = glm::transpose(glm::inverse(modelMatrix)),

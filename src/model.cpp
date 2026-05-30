@@ -35,6 +35,8 @@ constexpr uint32_t kMeshCacheVersion = 0xC0DE000A;
 // mesh globals
 std::vector<VertexData> vertexData_;
 std::vector<uint32_t> indexData_;
+glm::vec3 sceneAABBMin_(0.0f);
+glm::vec3 sceneAABBMax_(0.0f);
 std::vector<CachedMaterial> cachedMaterials_;
 std::vector<GPUMaterial> materials_;
 std::vector<MaterialTextures> textures_;
@@ -239,6 +241,14 @@ bool initModel()
 	        .debugName = "Buffer: materials",
 	    },
 	    nullptr);
+
+	sceneAABBMin_ = glm::vec3(FLT_MAX);
+	sceneAABBMax_ = glm::vec3(-FLT_MAX);
+	for (const VertexData& v : vertexData_)
+	{
+		sceneAABBMin_ = glm::min(sceneAABBMin_, v.position);
+		sceneAABBMax_ = glm::max(sceneAABBMax_, v.position);
+	}
 
 	vb0_ = ctx_->createBuffer(
 	    {

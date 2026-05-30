@@ -59,6 +59,8 @@ struct LoadedMaterial
 };
 
 extern std::vector<uint32_t> indexData_;
+extern glm::vec3 sceneAABBMin_;
+extern glm::vec3 sceneAABBMax_;
 extern std::vector<CachedMaterial> cachedMaterials_;
 extern std::vector<MaterialTextures> textures_;
 extern std::unordered_map<std::string, lvk::Holder<lvk::TextureHandle>> texturesCache_;
