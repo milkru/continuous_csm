@@ -3,17 +3,7 @@ project(continuous_csm)
 
 set(CMAKE_CXX_STANDARD 20)
 
-find_package(Python3 REQUIRED)
 
-execute_process(
-    COMMAND ${Python3_EXECUTABLE} deploy_content.py
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/3rdparty/lightweightvk
-)
-
-execute_process(
-    COMMAND ${Python3_EXECUTABLE} deploy_deps.py
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/3rdparty/lightweightvk
-)
 
 set(LVK_WITH_SAMPLES OFF CACHE BOOL "" FORCE)
 

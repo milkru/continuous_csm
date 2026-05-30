@@ -8,6 +8,20 @@ The goal is to preserve the familiar behavior and controls of CSM while replacin
 
 ---
 
+## Build
+
+**Prerequisites:** CMake 3.22+, Python 3, Vulkan SDK
+
+Run once before first build (downloads dependencies and content, generates the VS solution):
+
+```bat
+setup.bat
+```
+
+Then open `build/continuous_csm.sln` in Visual Studio 2022 and build.
+
+---
+
 ## Motivation
 
 Traditional CSM improves shadow quality by splitting the camera frustum into multiple depth intervals:

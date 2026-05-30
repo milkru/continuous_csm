@@ -10,17 +10,14 @@ The core idea: instead of 4 orthographic cascades, use one shadow pass with `con
 
 ## Build
 
-**Prerequisites**: CMake 3.22+, Python 3, Visual Studio 2022, Vulkan SDK
+**Prerequisites**: CMake 3.22+, Python 3, Vulkan SDK
 
 ```bat
-# Generate VS solution (run from repo root)
-cmake -S . -B build
-
-# Or use the helper script
-GenerateProjectFiles.bat
+# Download deps + content, generate VS solution (run once from repo root)
+setup.bat
 ```
 
-CMake automatically runs `deploy_deps.py` and `deploy_content.py` from the LightweightVK submodule during configuration — these download Vulkan headers, GLFW, GLM, ImGui, and sample assets. This requires internet access and takes time on first run.
+`setup.bat` runs `download_content.py` (downloads Bistro scene into `content/`), `deploy_deps.py` from the LightweightVK submodule (downloads Vulkan headers, GLFW, GLM, ImGui, etc.), then CMake. Requires internet access and takes time on first run.
 
 ```bat
 # Build from command line after generation

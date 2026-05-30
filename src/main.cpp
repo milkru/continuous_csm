@@ -602,7 +602,7 @@ int main(int argc, char* argv[])
 
 	{
 		using namespace std::filesystem;
-		const path subdir("3rdparty/lightweightvk/third-party/content/");
+		const path subdir("content/");
 		path dir = current_path();
 		while (dir != current_path().root_path() && !exists(dir / subdir))
 		{
@@ -610,7 +610,7 @@ int main(int argc, char* argv[])
 		}
 		if (!exists(dir / subdir))
 		{
-			printf("Cannot find the content directory. Run `deploy_content.py` before running this app.");
+			printf("Cannot find the content directory. Run `download_content.py` before running this app.");
 			LVK_ASSERT(false);
 			return EXIT_FAILURE;
 		}
