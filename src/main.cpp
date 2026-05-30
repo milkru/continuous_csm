@@ -443,18 +443,44 @@ void render(double delta)
 
 	const float fov = float(45.0f * (M_PI / 180.0f));
 	const float aspectRatio = (float)width_ / (float)height_;
+	const glm::mat4 proj = glm::perspective(fov, aspectRatio, 0.5f, 500.0f);
+	const glm::mat4 view = camera_.getViewMatrix();
 
-	const glm::mat4 shadowProj = glm::ortho(-250.0f, 250.0f, -250.0f, 250.0f, 0.1f, 1000.0f);
-	const glm::mat4 shadowView =
-	    glm::mat4(glm::vec4(0.772608519f, 0.532385886f, -0.345892131f, 0), glm::vec4(0, 0.544812560f, 0.838557839f, 0),
-	              glm::vec4(0.634882748f, -0.647876859f, 0.420926809f, 0),
-	              glm::vec4(-58.9244843f, -30.4530792f, -508.410126f, 1.0f));
+	// Fit shadow ortho to the camera frustum (single cascade, full frustum)
+	const glm::vec3 kLightDir = glm::normalize(glm::vec3(0.5f, -1.0f, 0.3f));
+
+	glm::vec3 frustumCorners[8] = {
+		{ -1.0f,  1.0f, 0.0f }, {  1.0f,  1.0f, 0.0f },
+		{  1.0f, -1.0f, 0.0f }, { -1.0f, -1.0f, 0.0f },
+		{ -1.0f,  1.0f, 1.0f }, {  1.0f,  1.0f, 1.0f },
+		{  1.0f, -1.0f, 1.0f }, { -1.0f, -1.0f, 1.0f },
+	};
+	const glm::mat4 invCam = glm::inverse(proj * view);
+	for (uint32_t i = 0; i < 8; i++)
+	{
+		glm::vec4 c = invCam * glm::vec4(frustumCorners[i], 1.0f);
+		frustumCorners[i] = glm::vec3(c) / c.w;
+	}
+
+	glm::vec3 frustumCenter = glm::vec3(0.0f);
+	for (uint32_t i = 0; i < 8; i++)
+		frustumCenter += frustumCorners[i];
+	frustumCenter /= 8.0f;
+
+	float radius = 0.0f;
+	for (uint32_t i = 0; i < 8; i++)
+		radius = glm::max(radius, glm::length(frustumCorners[i] - frustumCenter));
+	radius = std::ceil(radius * 16.0f) / 16.0f;
+
+	const glm::mat4 shadowView = glm::lookAt(frustumCenter - kLightDir * radius, frustumCenter, glm::vec3(0.0f, 1.0f, 0.0f));
+	const glm::mat4 shadowProj = glm::ortho(-radius, radius, -radius, radius, 0.0f, 2.0f * radius);
+
 	const glm::mat4 scaleBias =
 	    glm::mat4(0.5, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.5, 0.0, 1.0);
 
 	perFrame_ = UniformsPerFrame{
-		.proj = glm::perspective(fov, aspectRatio, 0.5f, 500.0f),
-		.view = camera_.getViewMatrix(),
+		.proj = proj,
+		.view = view,
 		.light = scaleBias * shadowProj * shadowView,
 		.texShadow = fbShadowMap_.depthStencil.texture.index(),
 		.sampler = sampler_.index(),
