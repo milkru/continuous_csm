@@ -31,6 +31,9 @@
 
 constexpr bool kPreferIntegratedGPU = false;
 constexpr glm::vec4 kAmbientColor = glm::vec4(0.82f, 0.92f, 0.98f, 1.0f);
+constexpr uint32_t kNumCascades = 4;
+constexpr float kCascadeSplitLambda = 0.95f;
+const glm::vec3 kLightDir = glm::normalize(glm::vec3(0.5f, -1.0f, 0.3f));
 
 #if defined(NDEBUG)
 constexpr bool kEnableValidationLayers = false;
@@ -55,7 +58,8 @@ lvk::Framebuffer fbMain_;
 lvk::Framebuffer fbOffscreen_;
 lvk::Holder<lvk::TextureHandle> fbOffscreenColor_;
 lvk::Holder<lvk::TextureHandle> fbOffscreenDepth_;
-lvk::Framebuffer fbShadowMap_;
+lvk::Holder<lvk::TextureHandle> shadowCascadeTextures_[kNumCascades];
+lvk::Framebuffer fbShadowCascades_[kNumCascades];
 
 lvk::Holder<lvk::ShaderModuleHandle> smMeshVert_;
 lvk::Holder<lvk::ShaderModuleHandle> smMeshFrag_;
@@ -99,13 +103,21 @@ struct UniformsPerFrame
 {
 	glm::mat4 proj;
 	glm::mat4 view;
-	glm::mat4 light;
-	uint32_t texShadow = 0;
+	glm::mat4 cascadeLightMatrices[kNumCascades];
+	glm::vec4 cascadeSplitDepths;
+	uint32_t texShadow[kNumCascades] = {};
 	uint32_t sampler = 0;
 	uint32_t samplerShadow = 0;
 	uint32_t padding0 = 0;
+	uint32_t padding1 = 0;
 	glm::vec4 ambientColor = kAmbientColor;
 } perFrame_;
+
+struct UniformsPerFrameShadow
+{
+	glm::mat4 proj;
+	glm::mat4 view;
+};
 
 struct UniformsPerObject
 {
@@ -143,7 +155,7 @@ bool init(lvk::LVKwindow* window)
 	ubPerFrameShadow_ = ctx_->createBuffer({
 	    .usage = lvk::BufferUsageBits_Uniform,
 	    .storage = lvk::StorageType_HostVisible,
-	    .size = sizeof(UniformsPerFrame),
+	    .size = sizeof(UniformsPerFrameShadow),
 	    .debugName = "Buffer: uniforms (per frame shadow)",
 	});
 	ubPerObject_ = ctx_->createBuffer({
@@ -245,7 +257,8 @@ void destroy()
 	sampler_ = nullptr;
 	samplerShadow_ = nullptr;
 	ctx_->destroy(fbMain_);
-	ctx_->destroy(fbShadowMap_);
+	for (uint32_t i = 0; i < kNumCascades; i++)
+		shadowCascadeTextures_[i] = nullptr;
 	fbOffscreenColor_ = nullptr;
 	fbOffscreenDepth_ = nullptr;
 	queryPoolTimestamps_ = nullptr;
@@ -324,7 +337,7 @@ void createPipelines()
 	        .vertexInput = vdescs,
 	        .smVert = smShadowVert_,
 	        .smFrag = smShadowFrag_,
-	        .depthFormat = ctx_->getFormat(fbShadowMap_.depthStencil.texture),
+	        .depthFormat = lvk::Format_Z_UN16,
 	        .cullMode = lvk::CullMode_None,
 	        .debugName = "Pipeline: shadow",
 	    },
@@ -345,19 +358,23 @@ void createPipelines()
 
 void createShadowMap()
 {
-	const uint32_t w = 4096;
-	const uint32_t h = 4096;
+	const uint32_t kShadowMapSize = 4096;
 	const lvk::TextureDesc desc = {
 		.type = lvk::TextureType_2D,
 		.format = lvk::Format_Z_UN16,
-		.dimensions = { w, h },
+		.dimensions = { kShadowMapSize, kShadowMapSize },
 		.usage = lvk::TextureUsageBits_Attachment | lvk::TextureUsageBits_Sampled,
 		.numMipLevels = 1,
-		.debugName = "Shadow map",
 	};
-	fbShadowMap_ = {
-		.depthStencil = { .texture = ctx_->createTexture(desc).release() },
-	};
+	for (uint32_t i = 0; i < kNumCascades; i++)
+	{
+		char name[32];
+		snprintf(name, sizeof(name), "Shadow map (cascade %u)", i);
+		shadowCascadeTextures_[i] = ctx_->createTexture(desc, name);
+		fbShadowCascades_[i] = {
+			.depthStencil = { .texture = shadowCascadeTextures_[i] },
+		};
+	}
 }
 
 void createOffscreenFramebuffer()
@@ -446,46 +463,78 @@ void render(double delta)
 	const glm::mat4 proj = glm::perspective(fov, aspectRatio, 0.5f, 500.0f);
 	const glm::mat4 view = camera_.getViewMatrix();
 
-	// Fit shadow ortho to the camera frustum (single cascade, full frustum)
-	const glm::vec3 kLightDir = glm::normalize(glm::vec3(0.5f, -1.0f, 0.3f));
-
-	glm::vec3 frustumCorners[8] = {
-		{ -1.0f,  1.0f, 0.0f }, {  1.0f,  1.0f, 0.0f },
-		{  1.0f, -1.0f, 0.0f }, { -1.0f, -1.0f, 0.0f },
-		{ -1.0f,  1.0f, 1.0f }, {  1.0f,  1.0f, 1.0f },
-		{  1.0f, -1.0f, 1.0f }, { -1.0f, -1.0f, 1.0f },
-	};
+	// Compute cascade split depths and light matrices
+	const float nearClip = 0.5f;
+	const float farClip = 500.0f;
+	const float clipRange = farClip - nearClip;
+	const glm::vec3 lightDir = kLightDir;
 	const glm::mat4 invCam = glm::inverse(proj * view);
-	for (uint32_t i = 0; i < 8; i++)
+	const glm::mat4 scaleBias(0.5, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.5, 0.0, 1.0);
+
+	float cascadeSplits[kNumCascades];
 	{
-		glm::vec4 c = invCam * glm::vec4(frustumCorners[i], 1.0f);
-		frustumCorners[i] = glm::vec3(c) / c.w;
+		const float ratio = farClip / nearClip;
+		for (uint32_t i = 0; i < kNumCascades; i++)
+		{
+			float p = (i + 1) / float(kNumCascades);
+			float logSplit = nearClip * std::pow(ratio, p);
+			float uniformSplit = nearClip + clipRange * p;
+			float d = kCascadeSplitLambda * (logSplit - uniformSplit) + uniformSplit;
+			cascadeSplits[i] = (d - nearClip) / clipRange;
+		}
 	}
 
-	glm::vec3 frustumCenter = glm::vec3(0.0f);
-	for (uint32_t i = 0; i < 8; i++)
-		frustumCenter += frustumCorners[i];
-	frustumCenter /= 8.0f;
+	glm::mat4 shadowProjs[kNumCascades];
+	glm::mat4 shadowViews[kNumCascades];
 
-	float radius = 0.0f;
-	for (uint32_t i = 0; i < 8; i++)
-		radius = glm::max(radius, glm::length(frustumCorners[i] - frustumCenter));
-	radius = std::ceil(radius * 16.0f) / 16.0f;
+	float lastSplitDist = 0.0f;
+	for (uint32_t i = 0; i < kNumCascades; i++)
+	{
+		float splitDist = cascadeSplits[i];
 
-	const glm::mat4 shadowView = glm::lookAt(frustumCenter - kLightDir * radius, frustumCenter, glm::vec3(0.0f, 1.0f, 0.0f));
-	const glm::mat4 shadowProj = glm::ortho(-radius, radius, -radius, radius, 0.0f, 2.0f * radius);
+		glm::vec3 frustumCorners[8] = {
+			{ -1.0f,  1.0f, 0.0f }, {  1.0f,  1.0f, 0.0f },
+			{  1.0f, -1.0f, 0.0f }, { -1.0f, -1.0f, 0.0f },
+			{ -1.0f,  1.0f, 1.0f }, {  1.0f,  1.0f, 1.0f },
+			{  1.0f, -1.0f, 1.0f }, { -1.0f, -1.0f, 1.0f },
+		};
+		for (uint32_t j = 0; j < 8; j++)
+		{
+			glm::vec4 c = invCam * glm::vec4(frustumCorners[j], 1.0f);
+			frustumCorners[j] = glm::vec3(c) / c.w;
+		}
+		for (uint32_t j = 0; j < 4; j++)
+		{
+			glm::vec3 dist = frustumCorners[j + 4] - frustumCorners[j];
+			frustumCorners[j + 4] = frustumCorners[j] + dist * splitDist;
+			frustumCorners[j] = frustumCorners[j] + dist * lastSplitDist;
+		}
 
-	const glm::mat4 scaleBias =
-	    glm::mat4(0.5, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.5, 0.0, 1.0);
+		glm::vec3 center(0.0f);
+		for (uint32_t j = 0; j < 8; j++)
+			center += frustumCorners[j];
+		center /= 8.0f;
 
-	perFrame_ = UniformsPerFrame{
-		.proj = proj,
-		.view = view,
-		.light = scaleBias * shadowProj * shadowView,
-		.texShadow = fbShadowMap_.depthStencil.texture.index(),
-		.sampler = sampler_.index(),
-		.samplerShadow = samplerShadow_.index(),
-	};
+		float radius = 0.0f;
+		for (uint32_t j = 0; j < 8; j++)
+			radius = glm::max(radius, glm::length(frustumCorners[j] - center));
+		radius = std::ceil(radius * 16.0f) / 16.0f;
+
+		shadowViews[i] = glm::lookAt(center - lightDir * radius, center, glm::vec3(0.0f, 1.0f, 0.0f));
+		shadowProjs[i] = glm::ortho(-radius, radius, -radius, radius, 0.0f, 2.0f * radius);
+
+		perFrame_.cascadeLightMatrices[i] = scaleBias * shadowProjs[i] * shadowViews[i];
+		perFrame_.cascadeSplitDepths[i] = -(nearClip + splitDist * clipRange);
+		perFrame_.texShadow[i] = shadowCascadeTextures_[i].index();
+
+		lastSplitDist = splitDist;
+	}
+
+	perFrame_.proj = proj;
+	perFrame_.view = view;
+	perFrame_.sampler = sampler_.index();
+	perFrame_.samplerShadow = samplerShadow_.index();
+	perFrame_.ambientColor = kAmbientColor;
 
 	const glm::mat4 modelMatrix = glm::scale(glm::mat4(1.0f), glm::vec3(0.05f));
 	const UniformsPerObject perObject = {
@@ -500,36 +549,38 @@ void render(double delta)
 	buffer.cmdUpdateBuffer(ubPerFrame_, 0, sizeof(perFrame_), &perFrame_);
 	buffer.cmdUpdateBuffer(ubPerObject_, 0, sizeof(perObject), &perObject);
 
-	// Pass 1: shadows
+	// Pass 1: shadows (one sub-pass per cascade)
 	{
-		const UniformsPerFrame perFrameShadow{
-			.proj = shadowProj,
-			.view = shadowView,
-		};
-		buffer.cmdUpdateBuffer(ubPerFrameShadow_, 0, sizeof(perFrameShadow), &perFrameShadow);
-		buffer.cmdBeginRendering(renderPassShadow_, fbShadowMap_);
+		struct
 		{
-			buffer.cmdBindRenderPipeline(renderPipelineState_Shadow_);
-			buffer.cmdPushDebugGroupLabel("Render Shadows", 0xff0000ff);
-			buffer.cmdBindDepthState(depthState_);
-			buffer.cmdBindVertexBuffer(0, vb0_, 0);
+			uint64_t perFrame;
+			uint64_t perObject;
+		} bindings = {
+			.perFrame = ctx_->gpuAddress(ubPerFrameShadow_),
+			.perObject = ctx_->gpuAddress(ubPerObject_),
+		};
 
-			struct
-			{
-				uint64_t perFrame;
-				uint64_t perObject;
-			} bindings = {
-				.perFrame = ctx_->gpuAddress(ubPerFrameShadow_),
-				.perObject = ctx_->gpuAddress(ubPerObject_),
+		for (uint32_t i = 0; i < kNumCascades; i++)
+		{
+			const UniformsPerFrameShadow perFrameShadow{
+				.proj = shadowProjs[i],
+				.view = shadowViews[i],
 			};
-
-			buffer.cmdPushConstants(bindings);
-			buffer.cmdBindIndexBuffer(ib0_, lvk::IndexFormat_UI32);
-			buffer.cmdDrawIndexed((uint32_t)indexData_.size());
-			buffer.cmdPopDebugGroupLabel();
+			buffer.cmdUpdateBuffer(ubPerFrameShadow_, 0, sizeof(perFrameShadow), &perFrameShadow);
+			buffer.cmdBeginRendering(renderPassShadow_, fbShadowCascades_[i]);
+			{
+				buffer.cmdBindRenderPipeline(renderPipelineState_Shadow_);
+				buffer.cmdPushDebugGroupLabel("Render Shadows", 0xff0000ff);
+				buffer.cmdBindDepthState(depthState_);
+				buffer.cmdBindVertexBuffer(0, vb0_, 0);
+				buffer.cmdPushConstants(bindings);
+				buffer.cmdBindIndexBuffer(ib0_, lvk::IndexFormat_UI32);
+				buffer.cmdDrawIndexed((uint32_t)indexData_.size());
+				buffer.cmdPopDebugGroupLabel();
+			}
+			buffer.cmdEndRendering();
+			buffer.cmdTransitionToShaderReadOnly({ shadowCascadeTextures_[i] }, {});
 		}
-		buffer.cmdEndRendering();
-		buffer.cmdTransitionToShaderReadOnly({ fbShadowMap_.depthStencil.texture }, {});
 	}
 
 #define GPU_TIMESTAMP(ts) buffer.cmdWriteTimestamp(queryPoolTimestamps_, ts);

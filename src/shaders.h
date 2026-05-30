@@ -18,10 +18,14 @@ struct Material {
 layout(std430, buffer_reference) readonly buffer PerFrame {
   mat4 proj;
   mat4 view;
-  mat4 light;
-  uint texShadow;
+  mat4 cascadeLightMatrices[4];
+  vec4 cascadeSplitDepths;
+  uint texShadow[4];
   uint sampler0;
   uint samplerShadow0;
+  uint padding0;
+  uint padding1;
+  vec4 ambientColor;
 };
 
 layout(std430, buffer_reference) readonly buffer PerObject {
@@ -42,7 +46,7 @@ layout(push_constant) uniform constants {
 struct PerVertex {
   vec3 normal;
   vec2 uv;
-  vec4 shadowCoords;
+  vec4 worldPos; // .xyz = world-space position, .w = view-space Z
 };
 layout (location=0) out PerVertex vtx;
 layout (location=5) flat out Material mtl;
@@ -60,15 +64,15 @@ vec3 unpackOctahedral16(uint data) {
 }
 
 void main() {
-  mat4 proj = pc.perFrame.proj;
-  mat4 view = pc.perFrame.view;
+  mat4 proj  = pc.perFrame.proj;
+  mat4 view  = pc.perFrame.view;
   mat4 model = pc.perObject.model;
-  mat4 light = pc.perFrame.light;
   mtl = pc.materials.mtl[mtlIndex];
-  gl_Position = proj * view * model * vec4(pos, 1.0);
-  vtx.normal = normalize(mat3(pc.perObject.normal) * unpackOctahedral16(normal));
-  vtx.uv = uv;
-  vtx.shadowCoords = light * model * vec4(pos, 1.0);
+  vec4 worldPos = model * vec4(pos, 1.0);
+  gl_Position = proj * view * worldPos;
+  vtx.normal   = normalize(mat3(pc.perObject.normal) * unpackOctahedral16(normal));
+  vtx.uv       = uv;
+  vtx.worldPos = vec4(worldPos.xyz, (view * worldPos).z);
 }
 )";
 
@@ -109,11 +113,13 @@ const char* kCodeFS = R"(
 layout(std430, buffer_reference) readonly buffer PerFrame {
   mat4 proj;
   mat4 view;
-  mat4 light;
-  uint texShadow;
+  mat4 cascadeLightMatrices[4];
+  vec4 cascadeSplitDepths;
+  uint texShadow[4];
   uint sampler0;
   uint samplerShadow0;
   uint padding0;
+  uint padding1;
   vec4 ambientColor;
 };
 
@@ -129,7 +135,7 @@ struct Material {
 struct PerVertex {
   vec3 normal;
   vec2 uv;
-  vec4 shadowCoords;
+  vec4 worldPos;
 };
 
 layout(push_constant) uniform constants {
@@ -142,23 +148,26 @@ layout (location=0) out vec4 out_FragColor;
 
 layout (constant_id = 0) const bool bDrawNormals = false;
 
-float PCF3(vec3 uvw) {
-  float size = 1.0 / textureBindlessSize2D(pc.perFrame.texShadow).x;
+float PCF3(uint texId, vec3 uvw) {
+  float size = 1.0 / textureBindlessSize2D(texId).x;
   float shadow = 0.0;
   for (int v=-1; v<=+1; v++)
     for (int u=-1; u<=+1; u++)
-      shadow += textureBindless2DShadow(pc.perFrame.texShadow, pc.perFrame.samplerShadow0, uvw + size * vec3(u, v, 0));
-  return shadow / 9;
+      shadow += textureBindless2DShadow(texId, pc.perFrame.samplerShadow0, uvw + size * vec3(u, v, 0));
+  return shadow / 9.0;
 }
 
-float shadow(vec4 s) {
-  s = s / s.w;
-  if (s.z > -1.0 && s.z < 1.0) {
-    float depthBias = -0.00005;
-    float shadowSample = PCF3(vec3(s.x, 1.0 - s.y, s.z + depthBias));
-    return mix(0.3, 1.0, shadowSample);
+float shadow(vec3 worldPos, float viewZ) {
+  uint cascadeIndex = 0;
+  for (uint i = 0; i < 3; i++) {
+    if (viewZ < pc.perFrame.cascadeSplitDepths[i])
+      cascadeIndex = i + 1;
   }
-  return 1.0;
+  vec4 sc = pc.perFrame.cascadeLightMatrices[cascadeIndex] * vec4(worldPos, 1.0);
+  sc.xyz /= sc.w;
+  float depthBias = -0.0005;
+  float shadowSample = PCF3(pc.perFrame.texShadow[cascadeIndex], vec3(sc.x, 1.0 - sc.y, sc.z + depthBias));
+  return mix(0.3, 1.0, shadowSample);
 }
 
 void main() {
@@ -177,7 +186,7 @@ void main() {
   vec4 diffuse = pc.perFrame.ambientColor * Kd * (vec4(1.0) - f0);
   out_FragColor = bDrawNormals ?
     vec4(0.5 * (n+vec3(1.0)), 1.0) :
-    Ka + diffuse * shadow(vtx.shadowCoords);
+    Ka + diffuse * shadow(vtx.worldPos.xyz, vtx.worldPos.w);
 };
 )";
 
@@ -187,10 +196,6 @@ layout (location=0) in vec3 pos;
 layout(std430, buffer_reference) readonly buffer PerFrame {
   mat4 proj;
   mat4 view;
-  mat4 light;
-  uint texShadow;
-  uint sampler0;
-  uint samplerShadow0;
 };
 
 layout(std430, buffer_reference) readonly buffer PerObject {
@@ -203,8 +208,8 @@ layout(push_constant) uniform constants {
 } pc;
 
 void main() {
-  mat4 proj = pc.perFrame.proj;
-  mat4 view = pc.perFrame.view;
+  mat4 proj  = pc.perFrame.proj;
+  mat4 view  = pc.perFrame.view;
   mat4 model = pc.perObject.model;
   gl_Position = proj * view * model * vec4(pos, 1.0);
 }
