@@ -12,6 +12,7 @@
 #include <string>
 
 #define GLM_ENABLE_EXPERIMENTAL
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/ext.hpp>
 #include <glm/glm.hpp>
 
@@ -93,7 +94,6 @@ bool mousePressed_ = false;
 bool enableWireframe_ = false;
 bool showPerfStats_ = true;
 bool drawNormals_ = false;
-bool isShadowMapDirty_ = true;
 
 struct UniformsPerFrame
 {
@@ -352,7 +352,7 @@ void createShadowMap()
 		.format = lvk::Format_Z_UN16,
 		.dimensions = { w, h },
 		.usage = lvk::TextureUsageBits_Attachment | lvk::TextureUsageBits_Sampled,
-		.numMipLevels = lvk::calcNumMipLevels(w, h),
+		.numMipLevels = 1,
 		.debugName = "Shadow map",
 	};
 	fbShadowMap_ = {
@@ -444,7 +444,7 @@ void render(double delta)
 	const float fov = float(45.0f * (M_PI / 180.0f));
 	const float aspectRatio = (float)width_ / (float)height_;
 
-	const glm::mat4 shadowProj = glm::perspective(float(60.0f * (M_PI / 180.0f)), 1.0f, 10.0f, 4000.0f);
+	const glm::mat4 shadowProj = glm::ortho(-250.0f, 250.0f, -250.0f, 250.0f, 0.1f, 1000.0f);
 	const glm::mat4 shadowView =
 	    glm::mat4(glm::vec4(0.772608519f, 0.532385886f, -0.345892131f, 0), glm::vec4(0, 0.544812560f, 0.838557839f, 0),
 	              glm::vec4(0.634882748f, -0.647876859f, 0.420926809f, 0),
@@ -475,7 +475,6 @@ void render(double delta)
 	buffer.cmdUpdateBuffer(ubPerObject_, 0, sizeof(perObject), &perObject);
 
 	// Pass 1: shadows
-	if (isShadowMapDirty_)
 	{
 		const UniformsPerFrame perFrameShadow{
 			.proj = shadowProj,
@@ -505,8 +504,6 @@ void render(double delta)
 		}
 		buffer.cmdEndRendering();
 		buffer.cmdTransitionToShaderReadOnly({ fbShadowMap_.depthStencil.texture }, {});
-		buffer.cmdGenerateMipmap(fbShadowMap_.depthStencil.texture);
-		isShadowMapDirty_ = false;
 	}
 
 #define GPU_TIMESTAMP(ts) buffer.cmdWriteTimestamp(queryPoolTimestamps_, ts);
