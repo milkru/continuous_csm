@@ -1,6 +1,4 @@
 #include <algorithm>
-#include <cassert>
-#include <filesystem>
 #include <mutex>
 #include <stdio.h>
 #include <string>
@@ -25,49 +23,34 @@
 #include "model.h"
 #include "utils.h"
 
-extern std::unique_ptr<lvk::IContext> ctx_;
+extern std::unique_ptr<lvk::IContext> context;
 extern std::string folderContentRoot;
-extern lvk::Holder<lvk::TextureHandle> textureDummyWhite_;
-extern lvk::Holder<lvk::BufferHandle> sbMaterials_;
+extern lvk::Holder<lvk::TextureHandle> textureDummyWhite;
+extern lvk::Holder<lvk::BufferHandle> materialsBuffer;
 
 constexpr uint32_t kMeshCacheVersion = 0xC0DE000A;
 
 // mesh globals
-std::vector<VertexData> vertexData_;
-std::vector<uint32_t> indexData_;
-glm::vec3 sceneAABBMin_(0.0f);
-glm::vec3 sceneAABBMax_(0.0f);
-std::vector<CachedMaterial> cachedMaterials_;
-std::vector<GPUMaterial> materials_;
-std::vector<MaterialTextures> textures_;
-std::vector<LoadedMaterial> loadedMaterials_;
-std::unordered_map<std::string, LoadedImage> imagesCache_;
-std::unordered_map<std::string, lvk::Holder<lvk::TextureHandle>> texturesCache_;
-std::mutex imagesCacheMutex_;
-std::mutex loadedMaterialsMutex_;
-std::atomic<bool> loaderShouldExit_ = false;
-std::atomic<uint32_t> remainingMaterialsToLoad_ = 0;
-std::unique_ptr<tf::Executor> loaderPool_ =
+std::vector<VertexData> vertexData;
+std::vector<uint32_t> indexData;
+glm::vec3 sceneAABBMin(0.0f);
+glm::vec3 sceneAABBMax(0.0f);
+std::vector<CachedMaterial> cachedMaterials;
+std::vector<GPUMaterial> materials;
+std::vector<MaterialTextures> textures;
+std::vector<LoadedMaterial> loadedMaterials;
+std::unordered_map<std::string, LoadedImage> imagesCache;
+std::unordered_map<std::string, lvk::Holder<lvk::TextureHandle>> texturesCache;
+std::mutex imagesCacheMutex;
+std::mutex loadedMaterialsMutex;
+std::atomic<bool> loaderShouldExit = false;
+std::atomic<uint32_t> remainingMaterialsToLoad = 0;
+std::unique_ptr<tf::Executor> loaderPool =
     std::make_unique<tf::Executor>(std::max(2u, std::thread::hardware_concurrency() / 2));
 
 // forward declarations used within mesh.cpp
-extern lvk::Holder<lvk::BufferHandle> vb0_;
-extern lvk::Holder<lvk::BufferHandle> ib0_;
-
-static bool endsWith(const std::string& str, const std::string& suffix)
-{
-	return str.size() >= suffix.size() && 0 == str.compare(str.size() - suffix.size(), suffix.size(), suffix);
-}
-
-static void stringReplaceAll(std::string& s, const std::string& searchString, const std::string& replaceString)
-{
-	size_t pos = 0;
-	while ((pos = s.find(searchString, pos)) != std::string::npos)
-	{
-		s.replace(pos, searchString.length(), replaceString);
-		pos += replaceString.length();
-	}
-}
+extern lvk::Holder<lvk::BufferHandle> vertexBuffer;
+extern lvk::Holder<lvk::BufferHandle> indexBuffer;
 
 std::string normalizeTextureName(const char* n)
 {
@@ -98,7 +81,7 @@ bool loadAndCache(const char* cacheFileName)
 		vertexCount += mesh->face_vertices[i];
 	}
 
-	vertexData_.reserve(vertexCount);
+	vertexData.reserve(vertexCount);
 
 	uint32_t vertexIndex = 0;
 	for (uint32_t face = 0; face < mesh->face_count; face++)
@@ -106,50 +89,50 @@ bool loadAndCache(const char* cacheFileName)
 		for (uint32_t v = 0; v < mesh->face_vertices[face]; v++)
 		{
 			LVK_ASSERT(v < 3);
-			const fastObjIndex gi = mesh->indices[vertexIndex++];
-			const float* p = &mesh->positions[gi.p * 3];
-			const float* n = &mesh->normals[gi.n * 3];
-			const float* t = &mesh->texcoords[gi.t * 2];
-			vertexData_.push_back({
-			    .position = glm::vec3(p[0], p[1], p[2]),
-			    .uv = glm::packHalf2x16(glm::vec2(t[0], t[1])),
-			    .normal = packOctahedral16(glm::vec3(n[0], n[1], n[2])),
+			const fastObjIndex objIndex = mesh->indices[vertexIndex++];
+			const float* positionPtr = &mesh->positions[objIndex.p * 3];
+			const float* normalPtr = &mesh->normals[objIndex.n * 3];
+			const float* texcoordPtr = &mesh->texcoords[objIndex.t * 2];
+			vertexData.push_back({
+			    .position = glm::vec3(positionPtr[0], positionPtr[1], positionPtr[2]),
+			    .uv = glm::packHalf2x16(glm::vec2(texcoordPtr[0], texcoordPtr[1])),
+			    .normal = packOctahedral16(glm::vec3(normalPtr[0], normalPtr[1], normalPtr[2])),
 			    .mtlIndex = (uint16_t)mesh->face_materials[face],
 			});
 		}
 	}
 
 	{
-		const size_t indexCount = vertexData_.size();
+		const size_t indexCount = vertexData.size();
 		std::vector<uint32_t> remap(indexCount);
-		const size_t vertexCountOpt = meshopt_generateVertexRemap(remap.data(), nullptr, indexCount, vertexData_.data(),
+		const size_t vertexCountOpt = meshopt_generateVertexRemap(remap.data(), nullptr, indexCount, vertexData.data(),
 		                                                          indexCount, sizeof(VertexData));
 		std::vector<VertexData> remappedVertices;
-		indexData_.resize(indexCount);
+		indexData.resize(indexCount);
 		remappedVertices.resize(vertexCountOpt);
-		meshopt_remapIndexBuffer(indexData_.data(), nullptr, indexCount, &remap[0]);
-		meshopt_remapVertexBuffer(remappedVertices.data(), vertexData_.data(), indexCount, sizeof(VertexData),
+		meshopt_remapIndexBuffer(indexData.data(), nullptr, indexCount, &remap[0]);
+		meshopt_remapVertexBuffer(remappedVertices.data(), vertexData.data(), indexCount, sizeof(VertexData),
 		                          remap.data());
-		vertexData_ = remappedVertices;
-		meshopt_optimizeVertexCache(indexData_.data(), indexData_.data(), indexCount, vertexCountOpt);
-		meshopt_optimizeOverdraw(indexData_.data(), indexData_.data(), indexCount, &vertexData_[0].position.x,
+		vertexData = remappedVertices;
+		meshopt_optimizeVertexCache(indexData.data(), indexData.data(), indexCount, vertexCountOpt);
+		meshopt_optimizeOverdraw(indexData.data(), indexData.data(), indexCount, &vertexData[0].position.x,
 		                         vertexCountOpt, sizeof(VertexData), 1.05f);
-		meshopt_optimizeVertexFetch(vertexData_.data(), indexData_.data(), indexCount, vertexData_.data(),
-		                            vertexCountOpt, sizeof(VertexData));
+		meshopt_optimizeVertexFetch(vertexData.data(), indexData.data(), indexCount, vertexData.data(), vertexCountOpt,
+		                            sizeof(VertexData));
 	}
 
-	for (uint32_t mtlIdx = 0; mtlIdx != mesh->material_count; mtlIdx++)
+	for (uint32_t materialIndex = 0; materialIndex != mesh->material_count; materialIndex++)
 	{
-		const fastObjMaterial& m = mesh->materials[mtlIdx];
-		CachedMaterial mtl;
-		mtl.ambient = glm::vec3(m.Ka[0], m.Ka[1], m.Ka[2]);
-		mtl.diffuse = glm::vec3(m.Kd[0], m.Kd[1], m.Kd[2]);
-		LVK_ASSERT(strlen(m.name) < MAX_MATERIAL_NAME);
-		strcat(mtl.name, m.name);
-		strcat(mtl.ambient_texname, normalizeTextureName(mesh->textures[m.map_Ka].name).c_str());
-		strcat(mtl.diffuse_texname, normalizeTextureName(mesh->textures[m.map_Kd].name).c_str());
-		strcat(mtl.alpha_texname, normalizeTextureName(mesh->textures[m.map_d].name).c_str());
-		cachedMaterials_.push_back(mtl);
+		const fastObjMaterial& objMaterial = mesh->materials[materialIndex];
+		CachedMaterial material;
+		material.ambient = glm::vec3(objMaterial.Ka[0], objMaterial.Ka[1], objMaterial.Ka[2]);
+		material.diffuse = glm::vec3(objMaterial.Kd[0], objMaterial.Kd[1], objMaterial.Kd[2]);
+		LVK_ASSERT(strlen(objMaterial.name) < MAX_MATERIAL_NAME);
+		strcat(material.name, objMaterial.name);
+		strcat(material.ambient_texname, normalizeTextureName(mesh->textures[objMaterial.map_Ka].name).c_str());
+		strcat(material.diffuse_texname, normalizeTextureName(mesh->textures[objMaterial.map_Kd].name).c_str());
+		strcat(material.alpha_texname, normalizeTextureName(mesh->textures[objMaterial.map_d].name).c_str());
+		cachedMaterials.push_back(material);
 	}
 
 	LLOGL("Caching mesh...\n");
@@ -162,16 +145,16 @@ bool loadAndCache(const char* cacheFileName)
 	{
 		return false;
 	}
-	const uint32_t numMaterials = (uint32_t)cachedMaterials_.size();
-	const uint32_t numVertices = (uint32_t)vertexData_.size();
-	const uint32_t numIndices = (uint32_t)indexData_.size();
+	const uint32_t numMaterials = (uint32_t)cachedMaterials.size();
+	const uint32_t numVertices = (uint32_t)vertexData.size();
+	const uint32_t numIndices = (uint32_t)indexData.size();
 	fwrite(&kMeshCacheVersion, sizeof(kMeshCacheVersion), 1, cacheFile);
 	fwrite(&numMaterials, sizeof(numMaterials), 1, cacheFile);
 	fwrite(&numVertices, sizeof(numVertices), 1, cacheFile);
 	fwrite(&numIndices, sizeof(numIndices), 1, cacheFile);
-	fwrite(cachedMaterials_.data(), sizeof(CachedMaterial), numMaterials, cacheFile);
-	fwrite(vertexData_.data(), sizeof(VertexData), numVertices, cacheFile);
-	fwrite(indexData_.data(), sizeof(uint32_t), numIndices, cacheFile);
+	fwrite(cachedMaterials.data(), sizeof(CachedMaterial), numMaterials, cacheFile);
+	fwrite(vertexData.data(), sizeof(VertexData), numVertices, cacheFile);
+	fwrite(indexData.data(), sizeof(uint32_t), numIndices, cacheFile);
 	return fclose(cacheFile) == 0;
 }
 
@@ -202,12 +185,12 @@ bool loadFromCache(const char* cacheFileName)
 	CHECK_READ(1, fread(&numMaterials, sizeof(numMaterials), 1, cacheFile));
 	CHECK_READ(1, fread(&numVertices, sizeof(numVertices), 1, cacheFile));
 	CHECK_READ(1, fread(&numIndices, sizeof(numIndices), 1, cacheFile));
-	cachedMaterials_.resize(numMaterials);
-	vertexData_.resize(numVertices);
-	indexData_.resize(numIndices);
-	CHECK_READ(numMaterials, fread(cachedMaterials_.data(), sizeof(CachedMaterial), numMaterials, cacheFile));
-	CHECK_READ(numVertices, fread(vertexData_.data(), sizeof(VertexData), numVertices, cacheFile));
-	CHECK_READ(numIndices, fread(indexData_.data(), sizeof(uint32_t), numIndices, cacheFile));
+	cachedMaterials.resize(numMaterials);
+	vertexData.resize(numVertices);
+	indexData.resize(numIndices);
+	CHECK_READ(numMaterials, fread(cachedMaterials.data(), sizeof(CachedMaterial), numMaterials, cacheFile));
+	CHECK_READ(numVertices, fread(vertexData.data(), sizeof(VertexData), numVertices, cacheFile));
+	CHECK_READ(numIndices, fread(indexData.data(), sizeof(uint32_t), numIndices, cacheFile));
 #undef CHECK_READ
 	fclose(cacheFile);
 	return true;
@@ -226,45 +209,45 @@ bool initModel()
 		}
 	}
 
-	for (const auto& mtl : cachedMaterials_)
+	for (const auto& mtl : cachedMaterials)
 	{
-		materials_.push_back(GPUMaterial{ glm::vec4(mtl.ambient, 1.0f), glm::vec4(mtl.diffuse, 1.0f),
-		                                  textureDummyWhite_.index(), textureDummyWhite_.index() });
+		materials.push_back(GPUMaterial{ glm::vec4(mtl.ambient, 1.0f), glm::vec4(mtl.diffuse, 1.0f),
+		                                 textureDummyWhite.index(), textureDummyWhite.index() });
 	}
 
-	sbMaterials_ = ctx_->createBuffer(
+	materialsBuffer = context->createBuffer(
 	    {
 	        .usage = lvk::BufferUsageBits_Storage,
 	        .storage = lvk::StorageType_Device,
-	        .size = sizeof(GPUMaterial) * materials_.size(),
-	        .data = materials_.data(),
+	        .size = sizeof(GPUMaterial) * materials.size(),
+	        .data = materials.data(),
 	        .debugName = "Buffer: materials",
 	    },
 	    nullptr);
 
-	sceneAABBMin_ = glm::vec3(FLT_MAX);
-	sceneAABBMax_ = glm::vec3(-FLT_MAX);
-	for (const VertexData& v : vertexData_)
+	sceneAABBMin = glm::vec3(FLT_MAX);
+	sceneAABBMax = glm::vec3(-FLT_MAX);
+	for (const VertexData& v : vertexData)
 	{
-		sceneAABBMin_ = glm::min(sceneAABBMin_, v.position);
-		sceneAABBMax_ = glm::max(sceneAABBMax_, v.position);
+		sceneAABBMin = glm::min(sceneAABBMin, v.position);
+		sceneAABBMax = glm::max(sceneAABBMax, v.position);
 	}
 
-	vb0_ = ctx_->createBuffer(
+	vertexBuffer = context->createBuffer(
 	    {
 	        .usage = lvk::BufferUsageBits_Vertex,
 	        .storage = lvk::StorageType_Device,
-	        .size = sizeof(VertexData) * vertexData_.size(),
-	        .data = vertexData_.data(),
+	        .size = sizeof(VertexData) * vertexData.size(),
+	        .data = vertexData.data(),
 	        .debugName = "Buffer: vertex",
 	    },
 	    nullptr);
-	ib0_ = ctx_->createBuffer(
+	indexBuffer = context->createBuffer(
 	    {
 	        .usage = lvk::BufferUsageBits_Index,
 	        .storage = lvk::StorageType_Device,
-	        .size = sizeof(uint32_t) * indexData_.size(),
-	        .data = indexData_.data(),
+	        .size = sizeof(uint32_t) * indexData.size(),
+	        .data = indexData.data(),
 	        .debugName = "Buffer: index",
 	    },
 	    nullptr);
@@ -283,9 +266,9 @@ LoadedImage loadImage(const char* fileName, int32_t channels)
 	const std::string debugName(debugStr);
 
 	{
-		std::lock_guard lock(imagesCacheMutex_);
-		const auto it = imagesCache_.find(debugName);
-		if (it != imagesCache_.end())
+		std::lock_guard lock(imagesCacheMutex);
+		const auto it = imagesCache.find(debugName);
+		if (it != imagesCache.end())
 		{
 			LVK_ASSERT(channels == (int32_t)it->second.channels);
 			return it->second;
@@ -303,8 +286,8 @@ LoadedImage loadImage(const char* fileName, int32_t channels)
 		.debugName = debugName,
 	};
 
-	std::lock_guard lock(imagesCacheMutex_);
-	imagesCache_[fileName] = img;
+	std::lock_guard lock(imagesCacheMutex);
+	imagesCache[fileName] = img;
 	return img;
 }
 
@@ -312,13 +295,13 @@ void loadMaterial(size_t i)
 {
 	static const std::string pathPrefix = folderContentRoot + "src/bistro/Exterior/";
 
-	remainingMaterialsToLoad_.fetch_sub(1u, std::memory_order_release);
+	remainingMaterialsToLoad.fetch_sub(1u, std::memory_order_release);
 
 #define LOAD_TEX(result, tex, channels)                                                                                \
-	const LoadedImage result = std::string(cachedMaterials_[i].tex).empty()                                            \
+	const LoadedImage result = std::string(cachedMaterials[i].tex).empty()                                             \
 	                               ? LoadedImage()                                                                     \
-	                               : loadImage((pathPrefix + cachedMaterials_[i].tex).c_str(), channels);              \
-	if (loaderShouldExit_.load(std::memory_order_acquire))                                                             \
+	                               : loadImage((pathPrefix + cachedMaterials[i].tex).c_str(), channels);               \
+	if (loaderShouldExit.load(std::memory_order_acquire))                                                              \
 	{                                                                                                                  \
 		return;                                                                                                        \
 	}
@@ -329,28 +312,28 @@ void loadMaterial(size_t i)
 
 #undef LOAD_TEX
 
-	const LoadedMaterial mtl{ i, ambient, diffuse, alpha };
+	const LoadedMaterial material{ i, ambient, diffuse, alpha };
 
-	if (!mtl.ambient.pixels && !mtl.diffuse.pixels)
+	if (!material.ambient.pixels && !material.diffuse.pixels)
 	{
-		materials_[i].texDiffuse = 0;
+		materials[i].texDiffuse = 0;
 	}
 	else
 	{
-		std::lock_guard guard(loadedMaterialsMutex_);
-		loadedMaterials_.push_back(mtl);
-		remainingMaterialsToLoad_.fetch_add(1u, std::memory_order_release);
+		std::lock_guard guard(loadedMaterialsMutex);
+		loadedMaterials.push_back(material);
+		remainingMaterialsToLoad.fetch_add(1u, std::memory_order_release);
 	}
 }
 
 void loadMaterials()
 {
 	stbi_set_flip_vertically_on_load(1);
-	remainingMaterialsToLoad_ = (uint32_t)cachedMaterials_.size();
-	textures_.resize(cachedMaterials_.size());
-	for (size_t i = 0; i != cachedMaterials_.size(); i++)
+	remainingMaterialsToLoad = (uint32_t)cachedMaterials.size();
+	textures.resize(cachedMaterials.size());
+	for (size_t i = 0; i != cachedMaterials.size(); i++)
 	{
-		loaderPool_->silent_async([i]() { loadMaterial(i); });
+		loaderPool->silent_async([i]() { loadMaterial(i); });
 	}
 }
 
@@ -374,13 +357,13 @@ lvk::TextureHandle createTexture(const LoadedImage& img)
 		return {};
 	}
 
-	const auto it = texturesCache_.find(img.debugName);
-	if (it != texturesCache_.end())
+	const auto it = texturesCache.find(img.debugName);
+	if (it != texturesCache.end())
 	{
 		return it->second;
 	}
 
-	lvk::Holder<lvk::TextureHandle> tex = ctx_->createTexture({
+	lvk::Holder<lvk::TextureHandle> texture = context->createTexture({
 	    .type = lvk::TextureType_2D,
 	    .format = formatFromChannels(img.channels),
 	    .dimensions = { img.w, img.h },
@@ -395,40 +378,40 @@ lvk::TextureHandle createTexture(const LoadedImage& img)
 	    .debugName = img.debugName.c_str(),
 	});
 
-	const lvk::TextureHandle handle = tex;
-	texturesCache_[img.debugName] = std::move(tex);
+	const lvk::TextureHandle handle = texture;
+	texturesCache[img.debugName] = std::move(texture);
 	return handle;
 }
 
 void processLoadedMaterials(lvk::ICommandBuffer& buffer)
 {
-	LoadedMaterial mtl;
+	LoadedMaterial material;
 
 	{
-		std::lock_guard guard(loadedMaterialsMutex_);
-		if (loadedMaterials_.empty())
+		std::lock_guard guard(loadedMaterialsMutex);
+		if (loadedMaterials.empty())
 		{
 			return;
 		}
-		mtl = loadedMaterials_.back();
-		loadedMaterials_.pop_back();
-		remainingMaterialsToLoad_.fetch_sub(1u, std::memory_order_release);
+		material = loadedMaterials.back();
+		loadedMaterials.pop_back();
+		remainingMaterialsToLoad.fetch_sub(1u, std::memory_order_release);
 	}
 
 	{
-		MaterialTextures tex;
-		tex.ambient = createTexture(mtl.ambient);
-		tex.diffuse = createTexture(mtl.diffuse);
-		tex.alpha = createTexture(mtl.alpha);
+		MaterialTextures materialTextures;
+		materialTextures.ambient = createTexture(material.ambient);
+		materialTextures.diffuse = createTexture(material.diffuse);
+		materialTextures.alpha = createTexture(material.alpha);
 
-		materials_[mtl.idx].texAmbient = tex.ambient.index();
-		materials_[mtl.idx].texDiffuse = tex.diffuse.index();
-		materials_[mtl.idx].texAlpha = tex.alpha.index();
-		textures_[mtl.idx] = std::move(tex);
+		materials[material.idx].texAmbient = materialTextures.ambient.index();
+		materials[material.idx].texDiffuse = materialTextures.diffuse.index();
+		materials[material.idx].texAlpha = materialTextures.alpha.index();
+		textures[material.idx] = std::move(materialTextures);
 	}
 
-	LVK_ASSERT(materials_[mtl.idx].texAmbient >= 0);
-	LVK_ASSERT(materials_[mtl.idx].texDiffuse >= 0);
-	LVK_ASSERT(materials_[mtl.idx].texAlpha >= 0);
-	buffer.cmdUpdateBuffer(sbMaterials_, 0, sizeof(GPUMaterial) * materials_.size(), materials_.data());
+	LVK_ASSERT(materials[material.idx].texAmbient >= 0);
+	LVK_ASSERT(materials[material.idx].texDiffuse >= 0);
+	LVK_ASSERT(materials[material.idx].texAlpha >= 0);
+	buffer.cmdUpdateBuffer(materialsBuffer, 0, sizeof(GPUMaterial) * materials.size(), materials.data());
 }

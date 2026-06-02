@@ -3,13 +3,11 @@
 #endif
 
 #include <atomic>
-#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
-#include <stdio.h>
 #include <string>
 
 #define GLM_ENABLE_EXPERIMENTAL
@@ -31,9 +29,19 @@
 #include "utils.h"
 
 constexpr bool kPreferIntegratedGPU = false;
+constexpr int32_t kWindowWidth = 1920;
+constexpr int32_t kWindowHeight = 1080;
 constexpr glm::vec4 kAmbientColor = glm::vec4(0.82f, 0.92f, 0.98f, 1.0f);
 constexpr uint32_t kNumCascades = 4;
 constexpr float kCascadeSplitLambda = 0.95f;
+constexpr uint32_t kShadowMapSize = 4096;
+// Per-cascade hardware rasterizer depth bias, applied while rendering each cascade
+// into its depth map. Index 0 is the nearest (tightest) cascade; farther cascades
+// cover more world space per shadow texel and need progressively more bias to stay
+// free of acne without over-biasing the near cascade into peter-panning. These are
+// starting points and meant to be tuned (Z_F32 may want larger values than UNORM).
+constexpr float kCascadeDepthBiasConstant[kNumCascades] = { 1.25f, 1.75f, 2.5f, 3.5f };
+constexpr float kCascadeDepthBiasSlope[kNumCascades] = { 1.75f, 2.0f, 2.75f, 3.5f };
 const glm::vec3 kLightDir = glm::normalize(glm::vec3(0.5f, -1.0f, 0.3f));
 
 #if defined(NDEBUG)
@@ -42,63 +50,62 @@ constexpr bool kEnableValidationLayers = false;
 constexpr bool kEnableValidationLayers = true;
 #endif
 
-int32_t width_ = 0;
-int32_t height_ = 0;
+int32_t windowWidth = 0;
+int32_t windowHeight = 0;
 
-std::unique_ptr<lvk::IContext> ctx_;
-std::unique_ptr<lvk::ImGuiRenderer> imgui_;
+std::unique_ptr<lvk::IContext> context;
+std::unique_ptr<lvk::ImGuiRenderer> imguiRenderer;
 std::string folderThirdParty;
 std::string folderContentRoot;
 
-lvk::Holder<lvk::QueryPoolHandle> queryPoolTimestamps_;
+lvk::Holder<lvk::QueryPoolHandle> queryPoolTimestamps;
 uint64_t pipelineTimestamps[GPUTimestamp_NUM_TIMESTAMPS] = {};
 double timestampBeginRendering = 0;
 double timestampEndRendering = 0;
 
-lvk::Framebuffer fbMain_;
-lvk::Framebuffer fbOffscreen_;
-lvk::Holder<lvk::TextureHandle> fbOffscreenColor_;
-lvk::Holder<lvk::TextureHandle> fbOffscreenDepth_;
-lvk::Holder<lvk::TextureHandle> shadowCascadeTextures_[kNumCascades];
-lvk::Framebuffer fbShadowCascades_[kNumCascades];
+lvk::Framebuffer framebufferMain;
+lvk::Framebuffer framebufferOffscreen;
+lvk::Holder<lvk::TextureHandle> framebufferOffscreenColor;
+lvk::Holder<lvk::TextureHandle> framebufferOffscreenDepth;
+lvk::Holder<lvk::TextureHandle> shadowCascadeTextures[kNumCascades];
+lvk::Framebuffer framebufferShadowCascades[kNumCascades];
 
-lvk::Holder<lvk::ShaderModuleHandle> smMeshVert_;
-lvk::Holder<lvk::ShaderModuleHandle> smMeshFrag_;
-lvk::Holder<lvk::ShaderModuleHandle> smMeshWireframeVert_;
-lvk::Holder<lvk::ShaderModuleHandle> smMeshWireframeFrag_;
-lvk::Holder<lvk::ShaderModuleHandle> smShadowVert_;
-lvk::Holder<lvk::ShaderModuleHandle> smShadowFrag_;
-lvk::Holder<lvk::ShaderModuleHandle> smFullscreenVert_;
-lvk::Holder<lvk::ShaderModuleHandle> smFullscreenFrag_;
+lvk::Holder<lvk::ShaderModuleHandle> shaderMeshVert;
+lvk::Holder<lvk::ShaderModuleHandle> shaderMeshFrag;
+lvk::Holder<lvk::ShaderModuleHandle> shaderMeshWireframeVert;
+lvk::Holder<lvk::ShaderModuleHandle> shaderMeshWireframeFrag;
+lvk::Holder<lvk::ShaderModuleHandle> shaderShadowVert;
+lvk::Holder<lvk::ShaderModuleHandle> shaderShadowFrag;
+lvk::Holder<lvk::ShaderModuleHandle> shaderFullscreenVert;
+lvk::Holder<lvk::ShaderModuleHandle> shaderFullscreenFrag;
 
-lvk::Holder<lvk::RenderPipelineHandle> renderPipelineState_Mesh_;
-lvk::Holder<lvk::RenderPipelineHandle> renderPipelineState_MeshNormals_;
-lvk::Holder<lvk::RenderPipelineHandle> renderPipelineState_MeshWireframe_;
-lvk::Holder<lvk::RenderPipelineHandle> renderPipelineState_Shadow_;
-lvk::Holder<lvk::RenderPipelineHandle> renderPipelineState_Fullscreen_;
+lvk::Holder<lvk::RenderPipelineHandle> pipelineMesh;
+lvk::Holder<lvk::RenderPipelineHandle> pipelineMeshNormals;
+lvk::Holder<lvk::RenderPipelineHandle> pipelineMeshWireframe;
+lvk::Holder<lvk::RenderPipelineHandle> pipelineShadow;
+lvk::Holder<lvk::RenderPipelineHandle> pipelineFullscreen;
 
-lvk::Holder<lvk::BufferHandle> vb0_;
-lvk::Holder<lvk::BufferHandle> ib0_;
-lvk::Holder<lvk::BufferHandle> sbMaterials_;
-lvk::Holder<lvk::BufferHandle> ubPerFrame_;
-lvk::Holder<lvk::BufferHandle> ubPerFrameShadow_;
-lvk::Holder<lvk::BufferHandle> ubPerObject_;
-lvk::Holder<lvk::SamplerHandle> sampler_;
-lvk::Holder<lvk::SamplerHandle> samplerShadow_;
-lvk::Holder<lvk::TextureHandle> textureDummyWhite_;
+lvk::Holder<lvk::BufferHandle> vertexBuffer;
+lvk::Holder<lvk::BufferHandle> indexBuffer;
+lvk::Holder<lvk::BufferHandle> materialsBuffer;
+lvk::Holder<lvk::BufferHandle> perFrameBuffer;
+lvk::Holder<lvk::BufferHandle> perFrameShadowBuffer;
+lvk::Holder<lvk::BufferHandle> perObjectBuffer;
+lvk::Holder<lvk::SamplerHandle> samplerLinear;
+lvk::Holder<lvk::SamplerHandle> samplerShadow;
+lvk::Holder<lvk::TextureHandle> textureDummyWhite;
 
-lvk::RenderPass renderPassOffscreen_;
-lvk::RenderPass renderPassMain_;
-lvk::RenderPass renderPassShadow_;
-lvk::DepthState depthState_;
-lvk::DepthState depthStateLEqual_;
+lvk::RenderPass renderPassOffscreen;
+lvk::RenderPass renderPassMain;
+lvk::RenderPass renderPassShadow;
+lvk::DepthState depthState;
 
-Camera camera_(glm::vec3(-100, 40, -47), glm::vec3(0, 35, 0), glm::vec3(0, 1, 0));
-glm::vec2 mousePos_ = glm::vec2(0.0f);
-bool mousePressed_ = false;
-bool enableWireframe_ = false;
-bool showPerfStats_ = true;
-bool drawNormals_ = false;
+Camera camera(glm::vec3(-100, 40, -47), glm::vec3(0, 35, 0), glm::vec3(0, 1, 0));
+glm::vec2 mousePosition = glm::vec2(0.0f);
+bool mousePressed = false;
+bool enableWireframe = false;
+bool showPerfStats = true;
+bool drawNormals = false;
 
 struct UniformsPerFrame
 {
@@ -112,7 +119,8 @@ struct UniformsPerFrame
 	uint32_t padding0 = 0;
 	uint32_t padding1 = 0;
 	glm::vec4 ambientColor = kAmbientColor;
-} perFrame_;
+	glm::vec4 lightDir = {};
+} perFrameUniforms;
 
 struct UniformsPerFrameShadow
 {
@@ -134,7 +142,7 @@ bool init(lvk::LVKwindow* window)
 {
 	{
 		const uint32_t pixel = 0xFFFFFFFF;
-		textureDummyWhite_ = ctx_->createTexture(
+		textureDummyWhite = context->createTexture(
 		    {
 		        .type = lvk::TextureType_2D,
 		        .format = lvk::Format_R_UN8,
@@ -147,35 +155,34 @@ bool init(lvk::LVKwindow* window)
 		    nullptr);
 	}
 
-	ubPerFrame_ = ctx_->createBuffer({
+	perFrameBuffer = context->createBuffer({
 	    .usage = lvk::BufferUsageBits_Uniform,
 	    .storage = lvk::StorageType_HostVisible,
 	    .size = sizeof(UniformsPerFrame),
 	    .debugName = "Buffer: uniforms (per frame)",
 	});
-	ubPerFrameShadow_ = ctx_->createBuffer({
+	perFrameShadowBuffer = context->createBuffer({
 	    .usage = lvk::BufferUsageBits_Uniform,
 	    .storage = lvk::StorageType_HostVisible,
 	    .size = sizeof(UniformsPerFrameShadow),
 	    .debugName = "Buffer: uniforms (per frame shadow)",
 	});
-	ubPerObject_ = ctx_->createBuffer({
+	perObjectBuffer = context->createBuffer({
 	    .usage = lvk::BufferUsageBits_Uniform,
 	    .storage = lvk::StorageType_HostVisible,
 	    .size = sizeof(UniformsPerObject),
 	    .debugName = "Buffer: uniforms (per object)",
 	});
 
-	depthState_ = { .compareOp = lvk::CompareOp_Less, .isDepthWriteEnabled = true };
-	depthStateLEqual_ = { .compareOp = lvk::CompareOp_LessEqual, .isDepthWriteEnabled = true };
+	depthState = { .compareOp = lvk::CompareOp_Less, .isDepthWriteEnabled = true };
 
-	sampler_ = ctx_->createSampler({
+	samplerLinear = context->createSampler({
 	    .mipMap = lvk::SamplerMip_Linear,
 	    .wrapU = lvk::SamplerWrap_Repeat,
 	    .wrapV = lvk::SamplerWrap_Repeat,
 	    .debugName = "Sampler: linear",
 	});
-	samplerShadow_ = ctx_->createSampler({
+	samplerShadow = context->createSampler({
 	    .wrapU = lvk::SamplerWrap_Clamp,
 	    .wrapV = lvk::SamplerWrap_Clamp,
 	    .depthCompareOp = lvk::CompareOp_LessEqual,
@@ -183,7 +190,7 @@ bool init(lvk::LVKwindow* window)
 	    .debugName = "Sampler: shadow",
 	});
 
-	renderPassOffscreen_ = {
+	renderPassOffscreen = {
 	    .color = {{
 	        .loadOp = lvk::LoadOp_Clear,
 	        .storeOp = lvk::StoreOp_Store,
@@ -195,29 +202,29 @@ bool init(lvk::LVKwindow* window)
 	        .clearDepth = 1.0f,
 	    },
 	};
-	renderPassMain_ = {
+	renderPassMain = {
 		.color = { { .loadOp = lvk::LoadOp_Clear,
 		             .storeOp = lvk::StoreOp_Store,
 		             .clearColor = { 0.0f, 0.0f, 0.0f, 1.0f } } },
 	};
-	renderPassShadow_ = {
+	renderPassShadow = {
 		.color = {},
 		.depth = { .loadOp = lvk::LoadOp_Clear, .storeOp = lvk::StoreOp_Store, .clearDepth = 1.0f },
 	};
 
-	fbMain_ = {
-		.color = { { .texture = ctx_->getCurrentSwapchainTexture() } },
+	framebufferMain = {
+		.color = { { .texture = context->getCurrentSwapchainTexture() } },
 	};
 
 	createShadowMap();
 	createOffscreenFramebuffer();
 	createPipelines();
 
-	imgui_ = std::make_unique<lvk::ImGuiRenderer>(
-	    *ctx_, window, (folderThirdParty + "3D-Graphics-Rendering-Cookbook/data/OpenSans-Light.ttf").c_str(),
-	    float(height_) / 70.0f);
+	imguiRenderer = std::make_unique<lvk::ImGuiRenderer>(
+	    *context, window, (folderThirdParty + "3D-Graphics-Rendering-Cookbook/data/OpenSans-Light.ttf").c_str(),
+	    float(windowHeight) / 70.0f);
 
-	queryPoolTimestamps_ = ctx_->createQueryPool(GPUTimestamp_NUM_TIMESTAMPS, "queryPoolTimestamps_");
+	queryPoolTimestamps = context->createQueryPool(GPUTimestamp_NUM_TIMESTAMPS, "queryPoolTimestamps");
 
 	if (!initModel())
 	{
@@ -231,52 +238,54 @@ bool init(lvk::LVKwindow* window)
 
 void destroy()
 {
-	imgui_ = nullptr;
+	imguiRenderer = nullptr;
 
-	vb0_ = nullptr;
-	ib0_ = nullptr;
-	sbMaterials_ = nullptr;
-	ubPerFrame_ = nullptr;
-	ubPerFrameShadow_ = nullptr;
-	ubPerObject_ = nullptr;
-	smMeshVert_ = nullptr;
-	smMeshFrag_ = nullptr;
-	smMeshWireframeVert_ = nullptr;
-	smMeshWireframeFrag_ = nullptr;
-	smShadowVert_ = nullptr;
-	smShadowFrag_ = nullptr;
-	smFullscreenVert_ = nullptr;
-	smFullscreenFrag_ = nullptr;
-	renderPipelineState_Mesh_ = nullptr;
-	renderPipelineState_MeshNormals_ = nullptr;
-	renderPipelineState_MeshWireframe_ = nullptr;
-	renderPipelineState_Shadow_ = nullptr;
-	renderPipelineState_Fullscreen_ = nullptr;
-	textureDummyWhite_ = nullptr;
-	textures_.clear();
-	texturesCache_.clear();
-	sampler_ = nullptr;
-	samplerShadow_ = nullptr;
-	ctx_->destroy(fbMain_);
+	vertexBuffer = nullptr;
+	indexBuffer = nullptr;
+	materialsBuffer = nullptr;
+	perFrameBuffer = nullptr;
+	perFrameShadowBuffer = nullptr;
+	perObjectBuffer = nullptr;
+	shaderMeshVert = nullptr;
+	shaderMeshFrag = nullptr;
+	shaderMeshWireframeVert = nullptr;
+	shaderMeshWireframeFrag = nullptr;
+	shaderShadowVert = nullptr;
+	shaderShadowFrag = nullptr;
+	shaderFullscreenVert = nullptr;
+	shaderFullscreenFrag = nullptr;
+	pipelineMesh = nullptr;
+	pipelineMeshNormals = nullptr;
+	pipelineMeshWireframe = nullptr;
+	pipelineShadow = nullptr;
+	pipelineFullscreen = nullptr;
+	textureDummyWhite = nullptr;
+	textures.clear();
+	texturesCache.clear();
+	samplerLinear = nullptr;
+	samplerShadow = nullptr;
+	context->destroy(framebufferMain);
 	for (uint32_t i = 0; i < kNumCascades; i++)
-		shadowCascadeTextures_[i] = nullptr;
-	fbOffscreenColor_ = nullptr;
-	fbOffscreenDepth_ = nullptr;
-	queryPoolTimestamps_ = nullptr;
-	ctx_ = nullptr;
+	{
+		shadowCascadeTextures[i] = nullptr;
+	}
+	framebufferOffscreenColor = nullptr;
+	framebufferOffscreenDepth = nullptr;
+	queryPoolTimestamps = nullptr;
+	context = nullptr;
 
 	printf("Waiting for the loader thread to exit...\n");
-	loaderPool_ = nullptr;
+	loaderPool = nullptr;
 }
 
 void createPipelines()
 {
-	if (renderPipelineState_Mesh_.valid())
+	if (pipelineMesh.valid())
 	{
 		return;
 	}
 
-	const lvk::VertexInput vdesc = {
+	const lvk::VertexInput vertexInputMesh = {
 	    .attributes =
 	        {
 	            { .location = 0, .format = lvk::VertexFormat_Float3, .offset = offsetof(VertexData, position) },
@@ -287,58 +296,58 @@ void createPipelines()
 	    .inputBindings = { { .stride = sizeof(VertexData) } },
 	};
 
-	const lvk::VertexInput vdescs = {
+	const lvk::VertexInput vertexInputPositionOnly = {
 		.attributes = { { .format = lvk::VertexFormat_Float3, .offset = offsetof(VertexData, position) } },
 		.inputBindings = { { .stride = sizeof(VertexData) } },
 	};
 
-	smMeshVert_ = ctx_->createShaderModule({ kCodeVS, lvk::Stage_Vert, "Shader Module: main (vert)" });
-	smMeshFrag_ = ctx_->createShaderModule({ kCodeFS, lvk::Stage_Frag, "Shader Module: main (frag)" });
-	smMeshWireframeVert_ =
-	    ctx_->createShaderModule({ kCodeVS_Wireframe, lvk::Stage_Vert, "Shader Module: main wireframe (vert)" });
-	smMeshWireframeFrag_ =
-	    ctx_->createShaderModule({ kCodeFS_Wireframe, lvk::Stage_Frag, "Shader Module: main wireframe (frag)" });
-	smShadowVert_ = ctx_->createShaderModule({ kShadowVS, lvk::Stage_Vert, "Shader Module: shadow (vert)" });
-	smShadowFrag_ = ctx_->createShaderModule({ kShadowFS, lvk::Stage_Frag, "Shader Module: shadow (frag)" });
-	smFullscreenVert_ =
-	    ctx_->createShaderModule({ kCodeFullscreenVS, lvk::Stage_Vert, "Shader Module: fullscreen (vert)" });
-	smFullscreenFrag_ =
-	    ctx_->createShaderModule({ kCodeFullscreenFS, lvk::Stage_Frag, "Shader Module: fullscreen (frag)" });
+	shaderMeshVert = context->createShaderModule({ kCodeVS, lvk::Stage_Vert, "Shader Module: main (vert)" });
+	shaderMeshFrag = context->createShaderModule({ kCodeFS, lvk::Stage_Frag, "Shader Module: main (frag)" });
+	shaderMeshWireframeVert =
+	    context->createShaderModule({ kCodeVS_Wireframe, lvk::Stage_Vert, "Shader Module: main wireframe (vert)" });
+	shaderMeshWireframeFrag =
+	    context->createShaderModule({ kCodeFS_Wireframe, lvk::Stage_Frag, "Shader Module: main wireframe (frag)" });
+	shaderShadowVert = context->createShaderModule({ kShadowVS, lvk::Stage_Vert, "Shader Module: shadow (vert)" });
+	shaderShadowFrag = context->createShaderModule({ kShadowFS, lvk::Stage_Frag, "Shader Module: shadow (frag)" });
+	shaderFullscreenVert =
+	    context->createShaderModule({ kCodeFullscreenVS, lvk::Stage_Vert, "Shader Module: fullscreen (vert)" });
+	shaderFullscreenFrag =
+	    context->createShaderModule({ kCodeFullscreenFS, lvk::Stage_Frag, "Shader Module: fullscreen (frag)" });
 
 	{
 		lvk::RenderPipelineDesc desc = {
-			.vertexInput = vdesc,
-			.smVert = smMeshVert_,
-			.smFrag = smMeshFrag_,
-			.color = { { .format = ctx_->getFormat(fbOffscreen_.color[0].texture) } },
-			.depthFormat = ctx_->getFormat(fbOffscreen_.depthStencil.texture),
+			.vertexInput = vertexInputMesh,
+			.smVert = shaderMeshVert,
+			.smFrag = shaderMeshFrag,
+			.color = { { .format = context->getFormat(framebufferOffscreen.color[0].texture) } },
+			.depthFormat = context->getFormat(framebufferOffscreen.depthStencil.texture),
 			.cullMode = lvk::CullMode_Back,
 			.frontFace = lvk::WindingMode_CCW,
 			.debugName = "Pipeline: mesh",
 		};
-		renderPipelineState_Mesh_ = ctx_->createRenderPipeline(desc, nullptr);
+		pipelineMesh = context->createRenderPipeline(desc, nullptr);
 
-		const uint32_t drawNormals = 1;
+		const uint32_t drawNormalsSpec = 1;
 		desc.specInfo = { .entries = { { .constantId = 0, .size = sizeof(uint32_t) } },
-			              .data = &drawNormals,
-			              .dataSize = sizeof(drawNormals) };
-		renderPipelineState_MeshNormals_ = ctx_->createRenderPipeline(desc, nullptr);
+			              .data = &drawNormalsSpec,
+			              .dataSize = sizeof(drawNormalsSpec) };
+		pipelineMeshNormals = context->createRenderPipeline(desc, nullptr);
 
 		desc.specInfo = {};
 		desc.polygonMode = lvk::PolygonMode_Line;
-		desc.vertexInput = vdescs;
-		desc.smVert = smMeshWireframeVert_;
-		desc.smFrag = smMeshWireframeFrag_;
+		desc.vertexInput = vertexInputPositionOnly;
+		desc.smVert = shaderMeshWireframeVert;
+		desc.smFrag = shaderMeshWireframeFrag;
 		desc.debugName = "Pipeline: mesh (wireframe)";
-		renderPipelineState_MeshWireframe_ = ctx_->createRenderPipeline(desc, nullptr);
+		pipelineMeshWireframe = context->createRenderPipeline(desc, nullptr);
 	}
 
-	renderPipelineState_Shadow_ = ctx_->createRenderPipeline(
+	pipelineShadow = context->createRenderPipeline(
 	    lvk::RenderPipelineDesc{
-	        .vertexInput = vdescs,
-	        .smVert = smShadowVert_,
-	        .smFrag = smShadowFrag_,
-	        .depthFormat = lvk::Format_Z_UN16,
+	        .vertexInput = vertexInputPositionOnly,
+	        .smVert = shaderShadowVert,
+	        .smFrag = shaderShadowFrag,
+	        .depthFormat = lvk::Format_Z_F32,
 	        .cullMode = lvk::CullMode_None,
 	        .debugName = "Pipeline: shadow",
 	    },
@@ -346,23 +355,22 @@ void createPipelines()
 
 	{
 		const lvk::RenderPipelineDesc desc = {
-			.smVert = smFullscreenVert_,
-			.smFrag = smFullscreenFrag_,
-			.color = { { .format = ctx_->getFormat(fbMain_.color[0].texture) } },
-			.depthFormat = ctx_->getFormat(fbMain_.depthStencil.texture),
+			.smVert = shaderFullscreenVert,
+			.smFrag = shaderFullscreenFrag,
+			.color = { { .format = context->getFormat(framebufferMain.color[0].texture) } },
+			.depthFormat = context->getFormat(framebufferMain.depthStencil.texture),
 			.cullMode = lvk::CullMode_None,
 			.debugName = "Pipeline: fullscreen",
 		};
-		renderPipelineState_Fullscreen_ = ctx_->createRenderPipeline(desc, nullptr);
+		pipelineFullscreen = context->createRenderPipeline(desc, nullptr);
 	}
 }
 
 void createShadowMap()
 {
-	const uint32_t kShadowMapSize = 4096;
 	const lvk::TextureDesc desc = {
 		.type = lvk::TextureType_2D,
-		.format = lvk::Format_Z_UN16,
+		.format = lvk::Format_Z_F32,
 		.dimensions = { kShadowMapSize, kShadowMapSize },
 		.usage = lvk::TextureUsageBits_Attachment | lvk::TextureUsageBits_Sampled,
 		.numMipLevels = 1,
@@ -371,24 +379,24 @@ void createShadowMap()
 	{
 		char name[32];
 		snprintf(name, sizeof(name), "Shadow map (cascade %u)", i);
-		shadowCascadeTextures_[i] = ctx_->createTexture(desc, name);
-		fbShadowCascades_[i] = {
-			.depthStencil = { .texture = shadowCascadeTextures_[i] },
+		shadowCascadeTextures[i] = context->createTexture(desc, name);
+		framebufferShadowCascades[i] = {
+			.depthStencil = { .texture = shadowCascadeTextures[i] },
 		};
 	}
 }
 
 void createOffscreenFramebuffer()
 {
-	const uint32_t w = (uint32_t)width_;
-	const uint32_t h = (uint32_t)height_;
+	const uint32_t w = (uint32_t)windowWidth;
+	const uint32_t h = (uint32_t)windowHeight;
 
 	const lvk::TextureDesc descColor = {
 		.type = lvk::TextureType_2D,
 		.format = lvk::Format_RGBA_UN8,
 		.dimensions = { w, h },
 		.usage = lvk::TextureUsageBits_Attachment | lvk::TextureUsageBits_Sampled | lvk::TextureUsageBits_Storage,
-		.numMipLevels = lvk::calcNumMipLevels(w, h),
+		.numMipLevels = 1,
 		.debugName = "Offscreen framebuffer (color)",
 	};
 	const lvk::TextureDesc descDepth = {
@@ -396,40 +404,40 @@ void createOffscreenFramebuffer()
 		.format = lvk::Format_Z_UN24,
 		.dimensions = { w, h },
 		.usage = lvk::TextureUsageBits_Attachment | lvk::TextureUsageBits_Sampled,
-		.numMipLevels = lvk::calcNumMipLevels(w, h),
+		.numMipLevels = 1,
 		.debugName = "Offscreen framebuffer (depth)",
 	};
 
-	fbOffscreenColor_ = ctx_->createTexture(descColor);
-	fbOffscreenDepth_ = ctx_->createTexture(descDepth);
-	fbOffscreen_ = {
-		.color = { { .texture = fbOffscreenColor_ } },
-		.depthStencil = { .texture = fbOffscreenDepth_ },
+	framebufferOffscreenColor = context->createTexture(descColor);
+	framebufferOffscreenDepth = context->createTexture(descDepth);
+	framebufferOffscreen = {
+		.color = { { .texture = framebufferOffscreenColor } },
+		.depthStencil = { .texture = framebufferOffscreenDepth },
 	};
 }
 
 void resize()
 {
-	if (!width_ || !height_)
+	if (!windowWidth || !windowHeight)
 	{
 		return;
 	}
-	ctx_->recreateSwapchain(width_, height_);
+	context->recreateSwapchain(windowWidth, windowHeight);
 	createOffscreenFramebuffer();
 }
 
 void render(double delta)
 {
-	if (!width_ || !height_)
+	if (!windowWidth || !windowHeight)
 	{
 		return;
 	}
 
-	lvk::TextureHandle nativeDrawable = ctx_->getCurrentSwapchainTexture();
-	fbMain_.color[0].texture = nativeDrawable;
+	lvk::TextureHandle nativeDrawable = context->getCurrentSwapchainTexture();
+	framebufferMain.color[0].texture = nativeDrawable;
 
 	{
-		imgui_->beginFrame(fbMain_);
+		imguiRenderer->beginFrame(framebufferMain);
 
 		ImGui::Begin("Keyboard Hints:", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNavInputs);
 		ImGui::Text("W/S/A/D - Camera Movement");
@@ -440,51 +448,50 @@ void render(double delta)
 		ImGui::Text("P - Show Performance Stats");
 		ImGui::End();
 
-		if (uint32_t num = remainingMaterialsToLoad_.load(std::memory_order_acquire))
+		if (uint32_t materialsRemaining = remainingMaterialsToLoad.load(std::memory_order_acquire))
 		{
 			ImGui::SetNextWindowPos(ImVec2(0, 0));
 			ImGui::Begin("Loading...", nullptr,
 			             ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNavInputs);
-			ImGui::ProgressBar(1.0f - float(num) / cachedMaterials_.size(), ImVec2(ImGui::GetIO().DisplaySize.x, 32));
+			ImGui::ProgressBar(1.0f - float(materialsRemaining) / cachedMaterials.size(),
+			                   ImVec2(ImGui::GetIO().DisplaySize.x, 32));
 			ImGui::End();
 		}
 
-		if (showPerfStats_)
+		if (showPerfStats)
 		{
 			showTimeGPU();
 		}
 	}
 
-	camera_.update(delta, mousePos_, mousePressed_);
+	camera.update(delta, mousePosition, mousePressed);
 
 	timestampBeginRendering = glfwGetTime();
 
 	const float fov = float(45.0f * (M_PI / 180.0f));
-	const float aspectRatio = (float)width_ / (float)height_;
+	const float aspectRatio = (float)windowWidth / (float)windowHeight;
 	const glm::mat4 proj = glm::perspective(fov, aspectRatio, 0.5f, 500.0f);
-	const glm::mat4 view = camera_.getViewMatrix();
+	const glm::mat4 view = camera.getViewMatrix();
 
 	// Compute cascade split depths and light matrices
 	const float nearClip = 0.5f;
 	const float farClip = 500.0f;
 	const float clipRange = farClip - nearClip;
 	const glm::vec3 lightDir = kLightDir;
-	const glm::mat4 invCam = glm::inverse(proj * view);
+	const glm::mat4 inverseViewProj = glm::inverse(proj * view);
 	const glm::mat4 scaleBias(0.5, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.5, 0.0, 1.0);
 	const glm::mat4 modelMatrix = glm::scale(glm::mat4(1.0f), glm::vec3(0.05f));
-	const glm::vec3 worldAABBMin = glm::vec3(modelMatrix * glm::vec4(sceneAABBMin_, 1.0f));
-	const glm::vec3 worldAABBMax = glm::vec3(modelMatrix * glm::vec4(sceneAABBMax_, 1.0f));
 
 	float cascadeSplits[kNumCascades];
 	{
 		const float ratio = farClip / nearClip;
 		for (uint32_t i = 0; i < kNumCascades; i++)
 		{
-			float p = (i + 1) / float(kNumCascades);
-			float logSplit = nearClip * std::pow(ratio, p);
-			float uniformSplit = nearClip + clipRange * p;
-			float d = kCascadeSplitLambda * (logSplit - uniformSplit) + uniformSplit;
-			cascadeSplits[i] = (d - nearClip) / clipRange;
+			float splitFraction = (i + 1) / float(kNumCascades);
+			float logSplit = nearClip * std::pow(ratio, splitFraction);
+			float uniformSplit = nearClip + clipRange * splitFraction;
+			float splitDepth = kCascadeSplitLambda * (logSplit - uniformSplit) + uniformSplit;
+			cascadeSplits[i] = (splitDepth - nearClip) / clipRange;
 		}
 	}
 
@@ -497,15 +504,13 @@ void render(double delta)
 		float splitDist = cascadeSplits[i];
 
 		glm::vec3 frustumCorners[8] = {
-			{ -1.0f,  1.0f, 0.0f }, {  1.0f,  1.0f, 0.0f },
-			{  1.0f, -1.0f, 0.0f }, { -1.0f, -1.0f, 0.0f },
-			{ -1.0f,  1.0f, 1.0f }, {  1.0f,  1.0f, 1.0f },
-			{  1.0f, -1.0f, 1.0f }, { -1.0f, -1.0f, 1.0f },
+			{ -1.0f, 1.0f, 0.0f }, { 1.0f, 1.0f, 0.0f }, { 1.0f, -1.0f, 0.0f }, { -1.0f, -1.0f, 0.0f },
+			{ -1.0f, 1.0f, 1.0f }, { 1.0f, 1.0f, 1.0f }, { 1.0f, -1.0f, 1.0f }, { -1.0f, -1.0f, 1.0f },
 		};
 		for (uint32_t j = 0; j < 8; j++)
 		{
-			glm::vec4 c = invCam * glm::vec4(frustumCorners[j], 1.0f);
-			frustumCorners[j] = glm::vec3(c) / c.w;
+			glm::vec4 corner = inverseViewProj * glm::vec4(frustumCorners[j], 1.0f);
+			frustumCorners[j] = glm::vec3(corner) / corner.w;
 		}
 		for (uint32_t j = 0; j < 4; j++)
 		{
@@ -516,60 +521,64 @@ void render(double delta)
 
 		glm::vec3 center(0.0f);
 		for (uint32_t j = 0; j < 8; j++)
+		{
 			center += frustumCorners[j];
+		}
 		center /= 8.0f;
 
 		float radius = 0.0f;
 		for (uint32_t j = 0; j < 8; j++)
+		{
 			radius = glm::max(radius, glm::length(frustumCorners[j] - center));
+		}
 		radius = std::ceil(radius * 16.0f) / 16.0f;
 
-		// Project scene AABB corners onto the light direction to get tight depth bounds
-		float minFwd = FLT_MAX, maxFwd = -FLT_MAX;
-		for (uint32_t j = 0; j < 8; j++)
-		{
-			const glm::vec3 corner = {
-				(j & 1) ? worldAABBMax.x : worldAABBMin.x,
-				(j & 2) ? worldAABBMax.y : worldAABBMin.y,
-				(j & 4) ? worldAABBMax.z : worldAABBMin.z,
-			};
-			const float fwd = glm::dot(corner - center, lightDir);
-			minFwd = glm::min(minFwd, fwd);
-			maxFwd = glm::max(maxFwd, fwd);
-		}
+		// Tight sphere-fit depth range keeps depth precision high. Casters in front
+		// of the near plane (between the light and the slice) are not lost: they are
+		// flattened onto the near plane via "pancaking" in the shadow vertex shader,
+		// since LVK exposes no hardware depth-clamp toggle.
+		const glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
+		shadowViews[i] = glm::lookAt(center - lightDir * radius, center, up);
+		shadowProjs[i] = glm::ortho(-radius, radius, -radius, radius, 0.0f, 2.0f * radius);
 
-		// eyeDist: far enough back to see the most upstream caster (toward sun)
-		// depthRange: enough to reach the most downstream caster (into scene)
-		const float eyeDist = glm::max(radius, -minFwd);
-		const float depthRange = maxFwd + eyeDist;
+		// Stabilize: snap the projection to whole shadow-map texels so shadow edges
+		// don't shimmer as the camera moves (Valient stable CSM / MJP). Radius is
+		// rotation-invariant for a symmetric frustum slice, so the projection size
+		// is constant per cascade and only the origin needs snapping.
+		const glm::mat4 shadowMatrix = shadowProjs[i] * shadowViews[i];
+		glm::vec4 shadowOrigin = shadowMatrix * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+		shadowOrigin *= float(kShadowMapSize) * 0.5f;
+		const glm::vec2 roundedOrigin = glm::round(glm::vec2(shadowOrigin));
+		glm::vec2 roundOffset = roundedOrigin - glm::vec2(shadowOrigin);
+		roundOffset *= 2.0f / float(kShadowMapSize);
+		shadowProjs[i][3][0] += roundOffset.x;
+		shadowProjs[i][3][1] += roundOffset.y;
 
-		shadowViews[i] = glm::lookAt(center - lightDir * eyeDist, center, glm::vec3(0.0f, 1.0f, 0.0f));
-		shadowProjs[i] = glm::ortho(-radius, radius, -radius, radius, 0.0f, depthRange);
-
-		perFrame_.cascadeLightMatrices[i] = scaleBias * shadowProjs[i] * shadowViews[i];
-		perFrame_.cascadeSplitDepths[i] = -(nearClip + splitDist * clipRange);
-		perFrame_.texShadow[i] = shadowCascadeTextures_[i].index();
+		perFrameUniforms.cascadeLightMatrices[i] = scaleBias * shadowProjs[i] * shadowViews[i];
+		perFrameUniforms.cascadeSplitDepths[i] = -(nearClip + splitDist * clipRange);
+		perFrameUniforms.texShadow[i] = shadowCascadeTextures[i].index();
 
 		lastSplitDist = splitDist;
 	}
 
-	perFrame_.proj = proj;
-	perFrame_.view = view;
-	perFrame_.sampler = sampler_.index();
-	perFrame_.samplerShadow = samplerShadow_.index();
-	perFrame_.ambientColor = kAmbientColor;
+	perFrameUniforms.proj = proj;
+	perFrameUniforms.view = view;
+	perFrameUniforms.sampler = samplerLinear.index();
+	perFrameUniforms.samplerShadow = samplerShadow.index();
+	perFrameUniforms.ambientColor = kAmbientColor;
+	perFrameUniforms.lightDir = glm::vec4(kLightDir, 0.0f);
 
 	const UniformsPerObject perObject = {
 		.model = modelMatrix,
 		.normal = glm::transpose(glm::inverse(modelMatrix)),
 	};
 
-	lvk::ICommandBuffer& buffer = ctx_->acquireCommandBuffer();
+	lvk::ICommandBuffer& buffer = context->acquireCommandBuffer();
 
 	processLoadedMaterials(buffer);
 
-	buffer.cmdUpdateBuffer(ubPerFrame_, 0, sizeof(perFrame_), &perFrame_);
-	buffer.cmdUpdateBuffer(ubPerObject_, 0, sizeof(perObject), &perObject);
+	buffer.cmdUpdateBuffer(perFrameBuffer, 0, sizeof(perFrameUniforms), &perFrameUniforms);
+	buffer.cmdUpdateBuffer(perObjectBuffer, 0, sizeof(perObject), &perObject);
 
 	// Pass 1: shadows (one sub-pass per cascade)
 	{
@@ -578,8 +587,8 @@ void render(double delta)
 			uint64_t perFrame;
 			uint64_t perObject;
 		} bindings = {
-			.perFrame = ctx_->gpuAddress(ubPerFrameShadow_),
-			.perObject = ctx_->gpuAddress(ubPerObject_),
+			.perFrame = context->gpuAddress(perFrameShadowBuffer),
+			.perObject = context->gpuAddress(perObjectBuffer),
 		};
 
 		for (uint32_t i = 0; i < kNumCascades; i++)
@@ -588,36 +597,41 @@ void render(double delta)
 				.proj = shadowProjs[i],
 				.view = shadowViews[i],
 			};
-			buffer.cmdUpdateBuffer(ubPerFrameShadow_, 0, sizeof(perFrameShadow), &perFrameShadow);
-			buffer.cmdBeginRendering(renderPassShadow_, fbShadowCascades_[i]);
+			buffer.cmdUpdateBuffer(perFrameShadowBuffer, 0, sizeof(perFrameShadow), &perFrameShadow);
+			buffer.cmdBeginRendering(renderPassShadow, framebufferShadowCascades[i]);
 			{
-				buffer.cmdBindRenderPipeline(renderPipelineState_Shadow_);
+				buffer.cmdBindRenderPipeline(pipelineShadow);
 				buffer.cmdPushDebugGroupLabel("Render Shadows", 0xff0000ff);
-				buffer.cmdBindDepthState(depthState_);
-				buffer.cmdBindVertexBuffer(0, vb0_, 0);
+				buffer.cmdBindDepthState(depthState);
+				// Per-cascade slope-scaled depth bias, baked into the shadow map.
+				// (LVK resets depth-bias-enable on every cmdBeginRendering, so this
+				// must be set inside each cascade's pass.)
+				buffer.cmdSetDepthBiasEnable(true);
+				buffer.cmdSetDepthBias(kCascadeDepthBiasConstant[i], kCascadeDepthBiasSlope[i]);
+				buffer.cmdBindVertexBuffer(0, vertexBuffer, 0);
 				buffer.cmdPushConstants(bindings);
-				buffer.cmdBindIndexBuffer(ib0_, lvk::IndexFormat_UI32);
-				buffer.cmdDrawIndexed((uint32_t)indexData_.size());
+				buffer.cmdBindIndexBuffer(indexBuffer, lvk::IndexFormat_UI32);
+				buffer.cmdDrawIndexed((uint32_t)indexData.size());
 				buffer.cmdPopDebugGroupLabel();
 			}
 			buffer.cmdEndRendering();
-			buffer.cmdTransitionToShaderReadOnly({ shadowCascadeTextures_[i] }, {});
+			buffer.cmdTransitionToShaderReadOnly({ shadowCascadeTextures[i] }, {});
 		}
 	}
 
-#define GPU_TIMESTAMP(ts) buffer.cmdWriteTimestamp(queryPoolTimestamps_, ts);
+#define GPU_TIMESTAMP(ts) buffer.cmdWriteTimestamp(queryPoolTimestamps, ts);
 
 	// Pass 2: mesh
 	{
-		buffer.cmdResetQueryPool(queryPoolTimestamps_, 0, GPUTimestamp_NUM_TIMESTAMPS);
+		buffer.cmdResetQueryPool(queryPoolTimestamps, 0, GPUTimestamp_NUM_TIMESTAMPS);
 		GPU_TIMESTAMP(GPUTimestamp_BeginSceneRendering);
 
-		buffer.cmdBeginRendering(renderPassOffscreen_, fbOffscreen_);
+		buffer.cmdBeginRendering(renderPassOffscreen, framebufferOffscreen);
 		{
-			buffer.cmdBindRenderPipeline(drawNormals_ ? renderPipelineState_MeshNormals_ : renderPipelineState_Mesh_);
+			buffer.cmdBindRenderPipeline(drawNormals ? pipelineMeshNormals : pipelineMesh);
 			buffer.cmdPushDebugGroupLabel("Render Mesh", 0xff0000ff);
-			buffer.cmdBindDepthState(depthState_);
-			buffer.cmdBindVertexBuffer(0, vb0_, 0);
+			buffer.cmdBindDepthState(depthState);
+			buffer.cmdBindVertexBuffer(0, vertexBuffer, 0);
 
 			struct
 			{
@@ -625,18 +639,18 @@ void render(double delta)
 				uint64_t perObject;
 				uint64_t materials;
 			} bindings = {
-				.perFrame = ctx_->gpuAddress(ubPerFrame_),
-				.perObject = ctx_->gpuAddress(ubPerObject_),
-				.materials = ctx_->gpuAddress(sbMaterials_),
+				.perFrame = context->gpuAddress(perFrameBuffer),
+				.perObject = context->gpuAddress(perObjectBuffer),
+				.materials = context->gpuAddress(materialsBuffer),
 			};
 
 			buffer.cmdPushConstants(bindings);
-			buffer.cmdBindIndexBuffer(ib0_, lvk::IndexFormat_UI32);
-			buffer.cmdDrawIndexed((uint32_t)indexData_.size());
-			if (enableWireframe_)
+			buffer.cmdBindIndexBuffer(indexBuffer, lvk::IndexFormat_UI32);
+			buffer.cmdDrawIndexed((uint32_t)indexData.size());
+			if (enableWireframe)
 			{
-				buffer.cmdBindRenderPipeline(renderPipelineState_MeshWireframe_);
-				buffer.cmdDrawIndexed((uint32_t)indexData_.size());
+				buffer.cmdBindRenderPipeline(pipelineMeshWireframe);
+				buffer.cmdDrawIndexed((uint32_t)indexData.size());
 			}
 			buffer.cmdPopDebugGroupLabel();
 		}
@@ -649,25 +663,25 @@ void render(double delta)
 	{
 		GPU_TIMESTAMP(GPUTimestamp_BeginPresent);
 
-		const lvk::TextureHandle tex = fbOffscreen_.color[0].texture;
-		buffer.cmdBeginRendering(renderPassMain_, fbMain_, { .sampledImages = { tex } });
+		const lvk::TextureHandle offscreenTexture = framebufferOffscreen.color[0].texture;
+		buffer.cmdBeginRendering(renderPassMain, framebufferMain, { .sampledImages = { offscreenTexture } });
 		{
-			buffer.cmdBindRenderPipeline(renderPipelineState_Fullscreen_);
+			buffer.cmdBindRenderPipeline(pipelineFullscreen);
 			buffer.cmdPushDebugGroupLabel("Swapchain Output", 0xff0000ff);
-			buffer.cmdBindDepthState(depthState_);
+			buffer.cmdBindDepthState(depthState);
 
 			struct
 			{
 				uint32_t texture;
 			} bindings = {
-				.texture = tex.index(),
+				.texture = offscreenTexture.index(),
 			};
 
 			buffer.cmdPushConstants(bindings);
 			buffer.cmdDraw(3);
 			buffer.cmdPopDebugGroupLabel();
 
-			imgui_->endFrame(buffer);
+			imguiRenderer->endFrame(buffer);
 		}
 		buffer.cmdEndRendering();
 
@@ -676,14 +690,14 @@ void render(double delta)
 
 #undef GPU_TIMESTAMP
 
-	ctx_->submit(buffer, fbMain_.color[0].texture);
+	context->submit(buffer, framebufferMain.color[0].texture);
 
 	timestampEndRendering = glfwGetTime();
 
-	if (showPerfStats_)
+	if (showPerfStats)
 	{
-		ctx_->getQueryPoolResults(queryPoolTimestamps_, 0, LVK_ARRAY_NUM_ELEMENTS(pipelineTimestamps),
-		                          sizeof(pipelineTimestamps), pipelineTimestamps, sizeof(pipelineTimestamps[0]));
+		context->getQueryPoolResults(queryPoolTimestamps, 0, LVK_ARRAY_NUM_ELEMENTS(pipelineTimestamps),
+		                             sizeof(pipelineTimestamps), pipelineTimestamps, sizeof(pipelineTimestamps[0]));
 	}
 }
 
@@ -714,14 +728,28 @@ int main(int argc, char* argv[])
 		folderContentRoot = (dir / subdir).string();
 	}
 
-	lvk::LVKwindow* window = lvk::initWindow("Continuous CSM", width_, height_);
-	ctx_ = lvk::createVulkanContextWithSwapchain(window, width_, height_,
-	                                             {
-	                                                 .enableValidation = kEnableValidationLayers,
-	                                             },
-	                                             kPreferIntegratedGPU ? lvk::HWDeviceType_Integrated
-	                                                                  : lvk::HWDeviceType_Discrete);
-	if (!ctx_)
+	windowWidth = kWindowWidth;
+	windowHeight = kWindowHeight;
+	lvk::LVKwindow* window = lvk::initWindow("Continuous CSM", windowWidth, windowHeight, true);
+
+	// Center the window on the primary monitor's work area (taskbar excluded)
+	if (window)
+	{
+		if (GLFWmonitor* monitor = glfwGetPrimaryMonitor())
+		{
+			int32_t areaX = 0, areaY = 0, areaW = 0, areaH = 0;
+			glfwGetMonitorWorkarea(monitor, &areaX, &areaY, &areaW, &areaH);
+			glfwSetWindowPos(window, areaX + (areaW - windowWidth) / 2, areaY + (areaH - windowHeight) / 2);
+		}
+	}
+
+	context = lvk::createVulkanContextWithSwapchain(window, windowWidth, windowHeight,
+	                                                {
+	                                                    .enableValidation = kEnableValidationLayers,
+	                                                },
+	                                                kPreferIntegratedGPU ? lvk::HWDeviceType_Integrated
+	                                                                     : lvk::HWDeviceType_Discrete);
+	if (!context)
 	{
 		return EXIT_FAILURE;
 	}
@@ -734,10 +762,10 @@ int main(int argc, char* argv[])
 	double prevTime = glfwGetTime();
 
 	glfwSetFramebufferSizeCallback(window,
-	                               [](GLFWwindow*, int32_t w, int32_t h)
+	                               [](GLFWwindow*, int32_t newWidth, int32_t newHeight)
 	                               {
-		                               width_ = w;
-		                               height_ = h;
+		                               windowWidth = newWidth;
+		                               windowHeight = newHeight;
 		                               resize();
 	                               });
 
@@ -748,7 +776,7 @@ int main(int argc, char* argv[])
 		                         glfwGetFramebufferSize(w, &width, &height);
 		                         if (width && height)
 		                         {
-			                         mousePos_ = glm::vec2(x / width, 1.0f - y / height);
+			                         mousePosition = glm::vec2(x / width, 1.0f - y / height);
 			                         ImGui::GetIO().MousePos = ImVec2((float)x, (float)y);
 		                         }
 	                         });
@@ -761,13 +789,13 @@ int main(int argc, char* argv[])
 		    {
 			    if (button == GLFW_MOUSE_BUTTON_RIGHT)
 			    {
-				    mousePressed_ = (action == GLFW_PRESS);
-				    glfwSetInputMode(w, GLFW_CURSOR, mousePressed_ ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+				    mousePressed = (action == GLFW_PRESS);
+				    glfwSetInputMode(w, GLFW_CURSOR, mousePressed ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
 			    }
 		    }
 		    else
 		    {
-			    mousePressed_ = false;
+			    mousePressed = false;
 		    }
 		    if (g_PrevMouseButtonCallback)
 		    {
@@ -782,56 +810,56 @@ int main(int argc, char* argv[])
 		                       const bool pressed = action != GLFW_RELEASE && !ImGui::GetIO().WantCaptureKeyboard;
 		                       if (key == GLFW_KEY_ESCAPE && pressed)
 		                       {
-			                       loaderShouldExit_.store(true, std::memory_order_release);
+			                       loaderShouldExit.store(true, std::memory_order_release);
 			                       glfwSetWindowShouldClose(w, GLFW_TRUE);
 		                       }
 		                       if (key == GLFW_KEY_N && pressed)
 		                       {
-			                       drawNormals_ = !drawNormals_;
+			                       drawNormals = !drawNormals;
 		                       }
 		                       if (key == GLFW_KEY_T && pressed)
 		                       {
-			                       enableWireframe_ = !enableWireframe_;
+			                       enableWireframe = !enableWireframe;
 		                       }
 		                       if (key == GLFW_KEY_P && pressed)
 		                       {
-			                       showPerfStats_ = !showPerfStats_;
+			                       showPerfStats = !showPerfStats;
 		                       }
 		                       if (key == GLFW_KEY_W)
 		                       {
-			                       camera_.movement_.forward_ = pressed;
+			                       camera.movement.forward = pressed;
 		                       }
 		                       if (key == GLFW_KEY_S)
 		                       {
-			                       camera_.movement_.backward_ = pressed;
+			                       camera.movement.backward = pressed;
 		                       }
 		                       if (key == GLFW_KEY_A)
 		                       {
-			                       camera_.movement_.left_ = pressed;
+			                       camera.movement.left = pressed;
 		                       }
 		                       if (key == GLFW_KEY_D)
 		                       {
-			                       camera_.movement_.right_ = pressed;
+			                       camera.movement.right = pressed;
 		                       }
 		                       if (key == GLFW_KEY_Q)
 		                       {
-			                       camera_.movement_.up_ = pressed;
+			                       camera.movement.up = pressed;
 		                       }
 		                       if (key == GLFW_KEY_E)
 		                       {
-			                       camera_.movement_.down_ = pressed;
+			                       camera.movement.down = pressed;
 		                       }
 		                       if (mods & GLFW_MOD_SHIFT)
 		                       {
-			                       camera_.movement_.fastSpeed_ = pressed;
+			                       camera.movement.fastSpeed = pressed;
 		                       }
 		                       if (key == GLFW_KEY_LEFT_SHIFT || key == GLFW_KEY_RIGHT_SHIFT)
 		                       {
-			                       camera_.movement_.fastSpeed_ = pressed;
+			                       camera.movement.fastSpeed = pressed;
 		                       }
 		                       if (key == GLFW_KEY_SPACE)
 		                       {
-			                       camera_.setUpVector(glm::vec3(0.0f, 1.0f, 0.0f));
+			                       camera.setUpVector(glm::vec3(0.0f, 1.0f, 0.0f));
 		                       }
 		                       if (g_PrevKeyCallback)
 		                       {
@@ -847,7 +875,7 @@ int main(int argc, char* argv[])
 		const double delta = newTime - prevTime;
 		prevTime = newTime;
 
-		if (!width_ || !height_)
+		if (!windowWidth || !windowHeight)
 		{
 			continue;
 		}

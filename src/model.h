@@ -58,15 +58,15 @@ struct LoadedMaterial
 	LoadedImage alpha;
 };
 
-extern std::vector<uint32_t> indexData_;
-extern glm::vec3 sceneAABBMin_;
-extern glm::vec3 sceneAABBMax_;
-extern std::vector<CachedMaterial> cachedMaterials_;
-extern std::vector<MaterialTextures> textures_;
-extern std::unordered_map<std::string, lvk::Holder<lvk::TextureHandle>> texturesCache_;
-extern std::atomic<uint32_t> remainingMaterialsToLoad_;
-extern std::atomic<bool> loaderShouldExit_;
-extern std::unique_ptr<tf::Executor> loaderPool_;
+extern std::vector<uint32_t> indexData;
+extern glm::vec3 sceneAABBMin;
+extern glm::vec3 sceneAABBMax;
+extern std::vector<CachedMaterial> cachedMaterials;
+extern std::vector<MaterialTextures> textures;
+extern std::unordered_map<std::string, lvk::Holder<lvk::TextureHandle>> texturesCache;
+extern std::atomic<uint32_t> remainingMaterialsToLoad;
+extern std::atomic<bool> loaderShouldExit;
+extern std::unique_ptr<tf::Executor> loaderPool;
 
 bool initModel();
 void loadMaterials();

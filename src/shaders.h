@@ -26,6 +26,7 @@ layout(std430, buffer_reference) readonly buffer PerFrame {
   uint padding0;
   uint padding1;
   vec4 ambientColor;
+  vec4 lightDir;
 };
 
 layout(std430, buffer_reference) readonly buffer PerObject {
@@ -121,6 +122,7 @@ layout(std430, buffer_reference) readonly buffer PerFrame {
   uint padding0;
   uint padding1;
   vec4 ambientColor;
+  vec4 lightDir;
 };
 
 struct Material {
@@ -165,8 +167,9 @@ float shadow(vec3 worldPos, float viewZ) {
   }
   vec4 sc = pc.perFrame.cascadeLightMatrices[cascadeIndex] * vec4(worldPos, 1.0);
   sc.xyz /= sc.w;
-  float depthBias = -0.0005;
-  float shadowSample = PCF3(pc.perFrame.texShadow[cascadeIndex], vec3(sc.x, 1.0 - sc.y, sc.z + depthBias));
+  // Acne is handled by per-cascade hardware slope-scaled depth bias baked into the
+  // shadow map during the depth pass, so no constant bias is needed here.
+  float shadowSample = PCF3(pc.perFrame.texShadow[cascadeIndex], vec3(sc.x, 1.0 - sc.y, sc.z));
   return mix(0.3, 1.0, shadowSample);
 }
 
@@ -179,11 +182,10 @@ void main() {
   if (Kd.a < 0.5)
     discard;
   vec3 n = normalize(vtx.normal);
-  float NdotL1 = clamp(dot(n, normalize(vec3(-1, 1,+1))), 0.0, 1.0);
-  float NdotL2 = clamp(dot(n, normalize(vec3(-1, 1,-1))), 0.0, 1.0);
-  float NdotL = 0.5 * (NdotL1+NdotL2);
+  vec3 L = normalize(-pc.perFrame.lightDir.xyz);
+  float NdotL = clamp(dot(n, L), 0.0, 1.0);
   const vec4 f0 = vec4(0.04);
-  vec4 diffuse = pc.perFrame.ambientColor * Kd * (vec4(1.0) - f0);
+  vec4 diffuse = NdotL * pc.perFrame.ambientColor * Kd * (vec4(1.0) - f0);
   out_FragColor = bDrawNormals ?
     vec4(0.5 * (n+vec3(1.0)), 1.0) :
     Ka + diffuse * shadow(vtx.worldPos.xyz, vtx.worldPos.w);
@@ -212,6 +214,10 @@ void main() {
   mat4 view  = pc.perFrame.view;
   mat4 model = pc.perObject.model;
   gl_Position = proj * view * model * vec4(pos, 1.0);
+  // Pancaking: flatten casters in front of the near plane onto it instead of
+  // letting them clip away, so off-frustum occluders still cast. Vulkan's clip
+  // near plane is z=0 (GLM_FORCE_DEPTH_ZERO_TO_ONE); ortho w=1 so z is NDC depth.
+  gl_Position.z = max(gl_Position.z, 0.0);
 }
 )";
 

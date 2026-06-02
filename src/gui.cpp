@@ -10,18 +10,18 @@
 
 #include "gui.h"
 
-extern std::unique_ptr<lvk::IContext> ctx_;
-extern int32_t width_;
-extern int32_t height_;
+extern std::unique_ptr<lvk::IContext> context;
+extern int32_t windowWidth;
+extern int32_t windowHeight;
 extern uint64_t pipelineTimestamps[];
 extern double timestampBeginRendering;
 extern double timestampEndRendering;
 
 void showTimeGPU()
 {
-	const double toMS = ctx_->getTimestampPeriodToMs();
-	auto getTimespan = [toMS](GPUTimestamp begin) -> double
-	{ return double(pipelineTimestamps[begin + 1] - pipelineTimestamps[begin]) * toMS; };
+	const double toMilliseconds = context->getTimestampPeriodToMs();
+	auto getTimespan = [toMilliseconds](GPUTimestamp begin) -> double
+	{ return double(pipelineTimestamps[begin + 1] - pipelineTimestamps[begin]) * toMilliseconds; };
 
 	struct sTimeStats
 	{
@@ -96,39 +96,39 @@ void showTimeGPU()
 	                               ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
 	                               ImGuiWindowFlags_NoNav;
 	ImGui::SetNextWindowBgAlpha(0.8f);
-	ImGui::SetNextWindowPos({ 20.0f, (float)height_ * 0.8f }, ImGuiCond_Appearing);
-	ImGui::SetNextWindowSize({ (float)width_ * 0.4f, 0 });
+	ImGui::SetNextWindowPos({ 20.0f, (float)windowHeight * 0.8f }, ImGuiCond_Appearing);
+	ImGui::SetNextWindowSize({ (float)windowWidth * 0.4f, 0 });
 	ImGui::Begin("GPU Stats", nullptr, flags);
 	ImGui::Text("%s", text);
 
-	auto Sparkline = [](const char* id, const float* values, int32_t count, float min_v, float max_v, const ImVec4& col,
-	                    const ImVec2& size)
+	auto Sparkline = [](const char* id, const float* values, int32_t count, float minValue, float maxValue,
+	                    const ImVec4& color, const ImVec2& size)
 	{
 		const ImVec2 pos = ImGui::GetCursorScreenPos();
-		const float w = size.x < 0.0f ? ImGui::GetContentRegionAvail().x : size.x;
-		const ImVec2 sz = ImVec2(w, size.y);
-		ImGui::InvisibleButton(id, sz);
+		const float availableWidth = size.x < 0.0f ? ImGui::GetContentRegionAvail().x : size.x;
+		const ImVec2 drawSize = ImVec2(availableWidth, size.y);
+		ImGui::InvisibleButton(id, drawSize);
 
-		if (count < 2 || min_v >= max_v)
+		if (count < 2 || minValue >= maxValue)
 		{
 			return;
 		}
 
-		ImDrawList* dl = ImGui::GetWindowDrawList();
-		const float range = max_v - min_v;
-		const float baseY = pos.y + sz.y;
-		const ImU32 lineCol = ImGui::ColorConvertFloat4ToU32(col);
-		const ImU32 fillCol = ImGui::ColorConvertFloat4ToU32(ImVec4(col.x, col.y, col.z, col.w * 0.25f));
+		ImDrawList* drawList = ImGui::GetWindowDrawList();
+		const float range = maxValue - minValue;
+		const float baseY = pos.y + drawSize.y;
+		const ImU32 lineColor = ImGui::ColorConvertFloat4ToU32(color);
+		const ImU32 fillColor = ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, color.w * 0.25f));
 
-		auto xAt = [&](int32_t i) { return pos.x + (float)i / (float)(count - 1) * sz.x; };
-		auto yAt = [&](float v) { return baseY - (v - min_v) / range * sz.y; };
+		auto xAt = [&](int32_t i) { return pos.x + (float)i / (float)(count - 1) * drawSize.x; };
+		auto yAt = [&](float v) { return baseY - (v - minValue) / range * drawSize.y; };
 
 		for (int32_t i = 0; i < count - 1; i++)
 		{
 			const float x0 = xAt(i), y0 = yAt(values[i]);
 			const float x1 = xAt(i + 1), y1 = yAt(values[i + 1]);
-			dl->AddQuadFilled(ImVec2(x0, baseY), ImVec2(x0, y0), ImVec2(x1, y1), ImVec2(x1, baseY), fillCol);
-			dl->AddLine(ImVec2(x0, y0), ImVec2(x1, y1), lineCol, 1.5f);
+			drawList->AddQuadFilled(ImVec2(x0, baseY), ImVec2(x0, y0), ImVec2(x1, y1), ImVec2(x1, baseY), fillColor);
+			drawList->AddLine(ImVec2(x0, y0), ImVec2(x1, y1), lineColor, 1.5f);
 		}
 	};
 

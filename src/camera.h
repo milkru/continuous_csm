@@ -6,7 +6,7 @@ class Camera
 	Camera() = default;
 
 	Camera(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up)
-	    : cameraPosition_(pos), cameraOrientation_(glm::lookAt(pos, target, up)), up_(up)
+	    : cameraPosition(pos), cameraOrientation(glm::lookAt(pos, target, up)), upVector(up)
 	{
 	}
 
@@ -14,125 +14,105 @@ class Camera
 	{
 		if (mousePressed)
 		{
-			const glm::vec2 delta = mousePos - mousePos_;
-			const glm::quat deltaQuat = glm::quat(glm::vec3(-mouseSpeed_ * delta.y, mouseSpeed_ * delta.x, 0.0f));
-			cameraOrientation_ = glm::normalize(deltaQuat * cameraOrientation_);
-			setUpVector(up_);
+			const glm::vec2 mouseDelta = mousePos - mousePosition;
+			const glm::quat deltaRotation =
+			    glm::quat(glm::vec3(-mouseSpeed * mouseDelta.y, mouseSpeed * mouseDelta.x, 0.0f));
+			cameraOrientation = glm::normalize(deltaRotation * cameraOrientation);
+			setUpVector(upVector);
 		}
 
-		mousePos_ = mousePos;
+		mousePosition = mousePos;
 
-		const glm::mat4 v = glm::mat4_cast(cameraOrientation_);
-		const glm::vec3 forward = -glm::vec3(v[0][2], v[1][2], v[2][2]);
-		const glm::vec3 right = glm::vec3(v[0][0], v[1][0], v[2][0]);
+		const glm::mat4 rotationMatrix = glm::mat4_cast(cameraOrientation);
+		const glm::vec3 forward = -glm::vec3(rotationMatrix[0][2], rotationMatrix[1][2], rotationMatrix[2][2]);
+		const glm::vec3 right = glm::vec3(rotationMatrix[0][0], rotationMatrix[1][0], rotationMatrix[2][0]);
 		const glm::vec3 up = glm::cross(right, forward);
 
-		glm::vec3 accel(0.0f);
+		glm::vec3 accelerationDir(0.0f);
 
-		if (movement_.forward_)
+		if (movement.forward)
 		{
-			accel += forward;
+			accelerationDir += forward;
 		}
-		if (movement_.backward_)
+		if (movement.backward)
 		{
-			accel -= forward;
+			accelerationDir -= forward;
 		}
-		if (movement_.left_)
+		if (movement.left)
 		{
-			accel -= right;
+			accelerationDir -= right;
 		}
-		if (movement_.right_)
+		if (movement.right)
 		{
-			accel += right;
+			accelerationDir += right;
 		}
-		if (movement_.up_)
+		if (movement.up)
 		{
-			accel += up;
+			accelerationDir += up;
 		}
-		if (movement_.down_)
+		if (movement.down)
 		{
-			accel -= up;
-		}
-
-		if (movement_.fastSpeed_)
-		{
-			accel *= fastCoef_;
+			accelerationDir -= up;
 		}
 
-		if (accel == glm::vec3(0))
+		if (movement.fastSpeed)
 		{
-			moveSpeed_ -= moveSpeed_ * std::min((1.0f / damping_) * static_cast<float>(deltaSeconds), 1.0f);
+			accelerationDir *= fastCoefficient;
+		}
+
+		if (accelerationDir == glm::vec3(0))
+		{
+			velocity -= velocity * std::min((1.0f / damping) * static_cast<float>(deltaSeconds), 1.0f);
 		}
 		else
 		{
-			moveSpeed_ += accel * acceleration_ * static_cast<float>(deltaSeconds);
-			const float maxSpeed = movement_.fastSpeed_ ? maxSpeed_ * fastCoef_ : maxSpeed_;
-			if (glm::length(moveSpeed_) > maxSpeed)
+			velocity += accelerationDir * acceleration * static_cast<float>(deltaSeconds);
+			const float speedLimit = movement.fastSpeed ? maxSpeed * fastCoefficient : maxSpeed;
+			if (glm::length(velocity) > speedLimit)
 			{
-				moveSpeed_ = glm::normalize(moveSpeed_) * maxSpeed;
+				velocity = glm::normalize(velocity) * speedLimit;
 			}
 		}
 
-		cameraPosition_ += moveSpeed_ * static_cast<float>(deltaSeconds);
+		cameraPosition += velocity * static_cast<float>(deltaSeconds);
 	}
 
 	glm::mat4 getViewMatrix() const
 	{
-		const glm::mat4 t = glm::translate(glm::mat4(1.0f), -cameraPosition_);
-		const glm::mat4 r = glm::mat4_cast(cameraOrientation_);
-		return r * t;
-	}
-
-	glm::vec3 getPosition() const
-	{
-		return cameraPosition_;
-	}
-
-	void setPosition(const glm::vec3& pos)
-	{
-		cameraPosition_ = pos;
-	}
-
-	void resetMousePosition(const glm::vec2& p)
-	{
-		mousePos_ = p;
+		const glm::mat4 translation = glm::translate(glm::mat4(1.0f), -cameraPosition);
+		const glm::mat4 rotation = glm::mat4_cast(cameraOrientation);
+		return rotation * translation;
 	}
 
 	void setUpVector(const glm::vec3& up)
 	{
 		const glm::mat4 view = getViewMatrix();
-		const glm::vec3 dir = -glm::vec3(view[0][2], view[1][2], view[2][2]);
-		cameraOrientation_ = glm::lookAt(cameraPosition_, cameraPosition_ + dir, up);
-	}
-
-	void lookAt(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up)
-	{
-		cameraPosition_ = pos;
-		cameraOrientation_ = glm::lookAt(pos, target, up);
+		const glm::vec3 direction = -glm::vec3(view[0][2], view[1][2], view[2][2]);
+		cameraOrientation = glm::lookAt(cameraPosition, cameraPosition + direction, up);
 	}
 
   public:
 	struct Movement
 	{
-		bool forward_ = false;
-		bool backward_ = false;
-		bool left_ = false;
-		bool right_ = false;
-		bool up_ = false;
-		bool down_ = false;
-		bool fastSpeed_ = false;
-	} movement_;
+		bool forward = false;
+		bool backward = false;
+		bool left = false;
+		bool right = false;
+		bool up = false;
+		bool down = false;
+		bool fastSpeed = false;
+	} movement;
 
-	float mouseSpeed_ = 4.0f;
-	float acceleration_ = 150.0f;
-	float damping_ = 0.2f;
-	float maxSpeed_ = 750.0f;
-	float fastCoef_ = 10.0f;
+	float mouseSpeed = 4.0f;
+	float acceleration = 150.0f;
+	float damping = 0.2f;
+	float maxSpeed = 750.0f;
+	float fastCoefficient = 10.0f;
 
   private:
-	glm::vec2 mousePos_ = glm::vec2(0);
-	glm::vec3 cameraPosition_ = glm::vec3(0.0f, 10.0f, 10.0f);
-	glm::quat cameraOrientation_ = glm::quat(glm::vec3(0));
-	glm::vec3 moveSpeed_ = glm::vec3(0.0f);
-	glm::vec3 up_ = glm::vec3(0.0f, 0.0f, 1.0f);
+	glm::vec2 mousePosition = glm::vec2(0);
+	glm::vec3 cameraPosition = glm::vec3(0.0f, 10.0f, 10.0f);
+	glm::quat cameraOrientation = glm::quat(glm::vec3(0));
+	glm::vec3 velocity = glm::vec3(0.0f);
+	glm::vec3 upVector = glm::vec3(0.0f, 0.0f, 1.0f);
 };
