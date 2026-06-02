@@ -4,7 +4,9 @@ Research project investigating a continuous alternative to traditional Cascaded 
 
 The project uses [LightweightVK](https://github.com/corporateshark/lightweightvk) as the rendering framework and experimentation platform.
 
-The goal is to preserve the familiar behavior and controls of CSM while replacing its discrete cascade representation with a continuous shadow parameterization.
+The goal is to preserve the familiar behavior and controls of CSM while replacing its discrete cascade representation with a continuous shadow parameterization
+
+![Example](https://github.com/milkru/data_resources/blob/main/continuous_csm.png "Example")
 
 ---
 
