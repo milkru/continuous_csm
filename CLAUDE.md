@@ -28,13 +28,17 @@ The generated `continuous_csm.sln` opens directly in Visual Studio 2022. The sta
 
 ## Current State
 
-The codebase is a port of `3rdparty/lightweightvk/samples/Tiny_MeshLarge.cpp` (Bistro exterior scene) with a **traditional discrete cascaded shadow map** baseline now implemented (`kNumCascades = 4`). This discrete CSM is the comparison baseline; the *continuous* single-pass parameterization described in the Project Overview is the research goal and is not yet implemented.
+The codebase is a port of `3rdparty/lightweightvk/samples/Tiny_MeshLarge.cpp` (Bistro exterior scene). Two shadow paths now coexist, toggled at runtime (key `C`, `useContinuousShadow`) and selected in the lighting shader via the `shadowMode` uniform (0 = discrete, 1 = continuous):
 
-The current shadow pipeline is **hardware-rasterized** (`pipelineShadow` + `renderPassShadow`, vertex/fragment shaders `kShadowVS`/`kShadowFS`), not compute/software rasterized. Each cascade renders into its own `kShadowMapSize = 4096` depth texture (`shadowCascadeTextures[]`). Notable details:
+1. **Discrete cascaded shadow map** baseline (`kNumCascades = 4`) — the comparison baseline.
+2. **Continuous single-map** prototype — an initial implementation of the research goal. A single light-space depth map (`shadowContinuousTexture`, fit to the whole frustum) with a separable **logarithmic warp** applied per-vertex; this approximates "infinite logarithmic cascades" without cascade transitions.
 
-- Cascade splits + per-cascade light matrices fit to the main camera frustum each frame, with stable-CSM texel snapping (Valient / MJP) to avoid edge shimmer.
-- `PCF3` filtering with per-cascade slope-scaled depth bias baked into the depth pass (no constant bias in the lighting shader); near-plane pancaking in `kShadowVS`.
-- Shadow uniforms live in `UniformsPerFrameShadow` / `perFrameShadowBuffer`; lighting reads `cascadeLightMatrices[]`, `cascadeSplitDepths`, and `texShadow[]`.
+Both paths are currently **hardware-rasterized** (render pipelines + depth framebuffers), not compute/software rasterized. The continuous path is a hardware prototype: edges curve under the warp so it has minor caster artifacts (the receiver evaluates the warp analytically and stays correct). The planned correct version uses software rasterization with per-pixel/per-row inverse-warp — see `next_step_research.md` for the full derivation and the path to a light-aligned continuous map.
+
+- Discrete: `pipelineShadow` + `renderPassShadow`, shaders `kShadowVS`/`kShadowFS`, each cascade into its own `kShadowMapSize = 4096` texture (`shadowCascadeTextures[]`). Cascade splits + per-cascade light matrices fit to the camera frustum each frame, with stable-CSM texel snapping (Valient / MJP). `PCF3` filtering with per-cascade slope-scaled depth bias baked into the depth pass; near-plane pancaking in `kShadowVS`.
+- Continuous: `pipelineContinuousShadow` + `kContinuousShadowVS`; the warp lives in the shared `warpLightNDC()` helper at the top of `src/shaders.h` (used by both the caster VS and the lighting shader). Uniforms in `UniformsPerFrameContinuousShadow` / `perFrameContinuousShadowBuffer`; lighting reads `continuousLightViewProj`, `continuousWarpParams`, `continuousWarpRatio`, and `texShadowContinuous`.
+- Discrete shadow uniforms live in `UniformsPerFrameShadow` / `perFrameShadowBuffer`; lighting reads `cascadeLightMatrices[]`, `cascadeSplitDepths`, and `texShadow[]`.
+- **Debug overlay**: a shadow-texel checkerboard (`shadowChecker` / `checkerTexels`) that tints the lit scene to visualize per-texel shadow-map density for both paths.
 
 ## Architecture
 
@@ -42,7 +46,7 @@ Code is split across several files:
 
 | File | Contents |
 |---|---|
-| `src/main.cpp` | All LVK globals, render passes, pipelines, the CSM shadow pass (`createShadowMap`, cascade fitting, `UniformsPerFrameShadow`), `init`/`destroy`/`render`, GLFW callbacks, `main()` |
+| `src/main.cpp` | All LVK globals, render passes, pipelines, both shadow passes (`createShadowMap`, cascade fitting + continuous single-map fitting, `UniformsPerFrameShadow` / `UniformsPerFrameContinuousShadow`), `init`/`destroy`/`render`, GLFW callbacks, `main()` |
 | `src/gui.h` / `src/gui.cpp` | `showTimeGPU()` stats overlay with custom ImDrawList sparklines; owns `GPUTimestamp` enum |
 | `src/model.h` / `src/model.cpp` | Bistro OBJ loading, mesh cache, material/texture streaming via taskflow |
 | `src/camera.h` | Flat `Camera` class — no includes, no `using`, all `glm::` prefixed |
