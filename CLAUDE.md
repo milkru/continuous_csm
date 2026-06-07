@@ -26,13 +26,23 @@ cmake --build build --config Release --parallel
 
 The generated `continuous_csm.sln` opens directly in Visual Studio 2022. The startup project is set to `continuous_csm`.
 
+## Current State
+
+The codebase is a port of `3rdparty/lightweightvk/samples/Tiny_MeshLarge.cpp` (Bistro exterior scene) with a **traditional discrete cascaded shadow map** baseline now implemented (`kNumCascades = 4`). This discrete CSM is the comparison baseline; the *continuous* single-pass parameterization described in the Project Overview is the research goal and is not yet implemented.
+
+The current shadow pipeline is **hardware-rasterized** (`pipelineShadow` + `renderPassShadow`, vertex/fragment shaders `kShadowVS`/`kShadowFS`), not compute/software rasterized. Each cascade renders into its own `kShadowMapSize = 4096` depth texture (`shadowCascadeTextures[]`). Notable details:
+
+- Cascade splits + per-cascade light matrices fit to the main camera frustum each frame, with stable-CSM texel snapping (Valient / MJP) to avoid edge shimmer.
+- `PCF3` filtering with per-cascade slope-scaled depth bias baked into the depth pass (no constant bias in the lighting shader); near-plane pancaking in `kShadowVS`.
+- Shadow uniforms live in `UniformsPerFrameShadow` / `perFrameShadowBuffer`; lighting reads `cascadeLightMatrices[]`, `cascadeSplitDepths`, and `texShadow[]`.
+
 ## Architecture
 
-Port of `3rdparty/lightweightvk/samples/Tiny_MeshLarge.cpp` (Bistro exterior scene), used as the rendering baseline before CSM work begins. Split across several files:
+Code is split across several files:
 
 | File | Contents |
 |---|---|
-| `src/main.cpp` | All LVK globals, render passes, pipelines, `init`/`destroy`/`render`, GLFW callbacks, `main()` |
+| `src/main.cpp` | All LVK globals, render passes, pipelines, the CSM shadow pass (`createShadowMap`, cascade fitting, `UniformsPerFrameShadow`), `init`/`destroy`/`render`, GLFW callbacks, `main()` |
 | `src/gui.h` / `src/gui.cpp` | `showTimeGPU()` stats overlay with custom ImDrawList sparklines; owns `GPUTimestamp` enum |
 | `src/model.h` / `src/model.cpp` | Bistro OBJ loading, mesh cache, material/texture streaming via taskflow |
 | `src/camera.h` | Flat `Camera` class — no includes, no `using`, all `glm::` prefixed |
@@ -89,4 +99,4 @@ Our own submodules (`.gitmodules`):
 - Bindless-only: no descriptor sets per draw; use buffer device addresses and descriptor indexing.
 - `lvk::LVKwindow*` + `lvk::createVulkanContextWithSwapchain()` is the entry point (see `main.cpp`).
 - `lvk::ImGuiRenderer` wraps ImGui init/frame/submit — created in `init()`, owned by `imgui_`.
-- For compute/software rasterization work (the core of this research), look at how LVK dispatches compute shaders; hardware rasterization pipelines are available but the research direction favors compute.
+- The current discrete-CSM shadow pass uses **hardware rasterization** (render pipeline + depth framebuffers). The continuous-CSM research direction favors compute/software rasterization — for that work, look at how LVK dispatches compute shaders.

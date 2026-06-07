@@ -23,10 +23,12 @@ layout(std430, buffer_reference) readonly buffer PerFrame {
   uint texShadow[4];
   uint sampler0;
   uint samplerShadow0;
-  uint padding0;
-  uint padding1;
+  uint texShadowContinuous;
+  uint shadowMode;
   vec4 ambientColor;
   vec4 lightDir;
+  mat4 continuousLightMatrix;
+  uint pcfEnabled;
 };
 
 layout(std430, buffer_reference) readonly buffer PerObject {
@@ -119,10 +121,12 @@ layout(std430, buffer_reference) readonly buffer PerFrame {
   uint texShadow[4];
   uint sampler0;
   uint samplerShadow0;
-  uint padding0;
-  uint padding1;
+  uint texShadowContinuous;
+  uint shadowMode;
   vec4 ambientColor;
   vec4 lightDir;
+  mat4 continuousLightMatrix;
+  uint pcfEnabled;
 };
 
 struct Material {
@@ -160,16 +164,29 @@ float PCF3(uint texId, vec3 uvw) {
 }
 
 float shadow(vec3 worldPos, float viewZ) {
-  uint cascadeIndex = 0;
-  for (uint i = 0; i < 3; i++) {
-    if (viewZ < pc.perFrame.cascadeSplitDepths[i])
-      cascadeIndex = i + 1;
+  uint texId;
+  vec4 sc;
+  if (pc.perFrame.shadowMode == 1u) {
+    // Continuous: a single light-space shadow map fit to the whole frustum.
+    sc = pc.perFrame.continuousLightMatrix * vec4(worldPos, 1.0);
+    texId = pc.perFrame.texShadowContinuous;
+  } else {
+    // Discrete CSM: pick the cascade by view-space depth.
+    uint cascadeIndex = 0;
+    for (uint i = 0; i < 3; i++) {
+      if (viewZ < pc.perFrame.cascadeSplitDepths[i])
+        cascadeIndex = i + 1;
+    }
+    sc = pc.perFrame.cascadeLightMatrices[cascadeIndex] * vec4(worldPos, 1.0);
+    texId = pc.perFrame.texShadow[cascadeIndex];
   }
-  vec4 sc = pc.perFrame.cascadeLightMatrices[cascadeIndex] * vec4(worldPos, 1.0);
   sc.xyz /= sc.w;
-  // Acne is handled by per-cascade hardware slope-scaled depth bias baked into the
-  // shadow map during the depth pass, so no constant bias is needed here.
-  float shadowSample = PCF3(pc.perFrame.texShadow[cascadeIndex], vec3(sc.x, 1.0 - sc.y, sc.z));
+  // Acne is handled by hardware slope-scaled depth bias baked into the shadow map
+  // during the depth pass, so no constant bias is needed here.
+  vec3 uvw = vec3(sc.x, 1.0 - sc.y, sc.z);
+  float shadowSample = (pc.perFrame.pcfEnabled == 1u)
+    ? PCF3(texId, uvw)
+    : textureBindless2DShadow(texId, pc.perFrame.samplerShadow0, uvw);
   return mix(0.3, 1.0, shadowSample);
 }
 

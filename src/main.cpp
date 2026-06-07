@@ -34,7 +34,7 @@ constexpr int32_t kWindowHeight = 1080;
 constexpr glm::vec4 kAmbientColor = glm::vec4(0.82f, 0.92f, 0.98f, 1.0f);
 constexpr uint32_t kNumCascades = 4;
 constexpr float kCascadeSplitLambda = 0.95f;
-constexpr uint32_t kShadowMapSize = 4096;
+constexpr uint32_t kShadowMapSize = 512;
 // Per-cascade hardware rasterizer depth bias, applied while rendering each cascade
 // into its depth map. Index 0 is the nearest (tightest) cascade; farther cascades
 // cover more world space per shadow texel and need progressively more bias to stay
@@ -69,6 +69,8 @@ lvk::Holder<lvk::TextureHandle> framebufferOffscreenColor;
 lvk::Holder<lvk::TextureHandle> framebufferOffscreenDepth;
 lvk::Holder<lvk::TextureHandle> shadowCascadeTextures[kNumCascades];
 lvk::Framebuffer framebufferShadowCascades[kNumCascades];
+lvk::Holder<lvk::TextureHandle> shadowContinuousTexture;
+lvk::Framebuffer framebufferShadowContinuous;
 
 lvk::Holder<lvk::ShaderModuleHandle> shaderMeshVert;
 lvk::Holder<lvk::ShaderModuleHandle> shaderMeshFrag;
@@ -106,6 +108,8 @@ bool mousePressed = false;
 bool enableWireframe = false;
 bool showPerfStats = true;
 bool drawNormals = false;
+bool useContinuousShadow = false;
+bool usePCF = true;
 
 struct UniformsPerFrame
 {
@@ -116,10 +120,12 @@ struct UniformsPerFrame
 	uint32_t texShadow[kNumCascades] = {};
 	uint32_t sampler = 0;
 	uint32_t samplerShadow = 0;
-	uint32_t padding0 = 0;
-	uint32_t padding1 = 0;
+	uint32_t texShadowContinuous = 0;
+	uint32_t shadowMode = 0; // 0 = discrete CSM, 1 = continuous single map
 	glm::vec4 ambientColor = kAmbientColor;
 	glm::vec4 lightDir = {};
+	glm::mat4 continuousLightMatrix = glm::mat4(1.0f);
+	uint32_t pcfEnabled = 1; // 0 = single hardware-compare tap, 1 = 3x3 PCF
 } perFrameUniforms;
 
 struct UniformsPerFrameShadow
@@ -269,6 +275,7 @@ void destroy()
 	{
 		shadowCascadeTextures[i] = nullptr;
 	}
+	shadowContinuousTexture = nullptr;
 	framebufferOffscreenColor = nullptr;
 	framebufferOffscreenDepth = nullptr;
 	queryPoolTimestamps = nullptr;
@@ -384,6 +391,12 @@ void createShadowMap()
 			.depthStencil = { .texture = shadowCascadeTextures[i] },
 		};
 	}
+
+	// Single shadow map for the continuous (non-cascaded) path.
+	shadowContinuousTexture = context->createTexture(desc, "Shadow map (continuous)");
+	framebufferShadowContinuous = {
+		.depthStencil = { .texture = shadowContinuousTexture },
+	};
 }
 
 void createOffscreenFramebuffer()
@@ -446,6 +459,8 @@ void render(double delta)
 		ImGui::Text("N - Toggle Normals");
 		ImGui::Text("T - Toggle Wireframe");
 		ImGui::Text("P - Show Performance Stats");
+		ImGui::Text("C - Continuous Shadow (%s)", useContinuousShadow ? "ON" : "OFF");
+		ImGui::Text("F - PCF Filtering (%s)", usePCF ? "ON" : "OFF");
 		ImGui::End();
 
 		if (uint32_t materialsRemaining = remainingMaterialsToLoad.load(std::memory_order_acquire))
@@ -561,6 +576,56 @@ void render(double delta)
 		lastSplitDist = splitDist;
 	}
 
+	// Single light-space shadow map fit to the whole camera frustum (continuous path,
+	// checkpoint 1a: no warp yet). Same sphere-fit + texel-snap stabilization as a
+	// cascade, but covering the entire near->far range as one map.
+	glm::mat4 continuousLightProj;
+	glm::mat4 continuousLightView;
+	{
+		glm::vec3 frustumCorners[8] = {
+			{ -1.0f, 1.0f, 0.0f }, { 1.0f, 1.0f, 0.0f }, { 1.0f, -1.0f, 0.0f }, { -1.0f, -1.0f, 0.0f },
+			{ -1.0f, 1.0f, 1.0f }, { 1.0f, 1.0f, 1.0f }, { 1.0f, -1.0f, 1.0f }, { -1.0f, -1.0f, 1.0f },
+		};
+		for (uint32_t j = 0; j < 8; j++)
+		{
+			glm::vec4 corner = inverseViewProj * glm::vec4(frustumCorners[j], 1.0f);
+			frustumCorners[j] = glm::vec3(corner) / corner.w;
+		}
+
+		glm::vec3 center(0.0f);
+		for (uint32_t j = 0; j < 8; j++)
+		{
+			center += frustumCorners[j];
+		}
+		center /= 8.0f;
+
+		float radius = 0.0f;
+		for (uint32_t j = 0; j < 8; j++)
+		{
+			radius = glm::max(radius, glm::length(frustumCorners[j] - center));
+		}
+		radius = std::ceil(radius * 16.0f) / 16.0f;
+
+		const glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
+		continuousLightView = glm::lookAt(center - lightDir * radius, center, up);
+		continuousLightProj = glm::ortho(-radius, radius, -radius, radius, 0.0f, 2.0f * radius);
+
+		const glm::mat4 shadowMatrix = continuousLightProj * continuousLightView;
+		glm::vec4 shadowOrigin = shadowMatrix * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+		shadowOrigin *= float(kShadowMapSize) * 0.5f;
+		const glm::vec2 roundedOrigin = glm::round(glm::vec2(shadowOrigin));
+		glm::vec2 roundOffset = roundedOrigin - glm::vec2(shadowOrigin);
+		roundOffset *= 2.0f / float(kShadowMapSize);
+		continuousLightProj[3][0] += roundOffset.x;
+		continuousLightProj[3][1] += roundOffset.y;
+
+		perFrameUniforms.continuousLightMatrix = scaleBias * continuousLightProj * continuousLightView;
+	}
+
+	perFrameUniforms.texShadowContinuous = shadowContinuousTexture.index();
+	perFrameUniforms.shadowMode = useContinuousShadow ? 1u : 0u;
+	perFrameUniforms.pcfEnabled = usePCF ? 1u : 0u;
+
 	perFrameUniforms.proj = proj;
 	perFrameUniforms.view = view;
 	perFrameUniforms.sampler = samplerLinear.index();
@@ -580,7 +645,7 @@ void render(double delta)
 	buffer.cmdUpdateBuffer(perFrameBuffer, 0, sizeof(perFrameUniforms), &perFrameUniforms);
 	buffer.cmdUpdateBuffer(perObjectBuffer, 0, sizeof(perObject), &perObject);
 
-	// Pass 1: shadows (one sub-pass per cascade)
+	// Pass 1: shadows (CSM: one sub-pass per cascade; continuous: one single map)
 	{
 		struct
 		{
@@ -591,6 +656,32 @@ void render(double delta)
 			.perObject = context->gpuAddress(perObjectBuffer),
 		};
 
+		if (useContinuousShadow)
+		{
+			const UniformsPerFrameShadow perFrameShadow{
+				.proj = continuousLightProj,
+				.view = continuousLightView,
+			};
+			buffer.cmdUpdateBuffer(perFrameShadowBuffer, 0, sizeof(perFrameShadow), &perFrameShadow);
+			buffer.cmdBeginRendering(renderPassShadow, framebufferShadowContinuous);
+			{
+				buffer.cmdBindRenderPipeline(pipelineShadow);
+				buffer.cmdPushDebugGroupLabel("Render Shadows (continuous)", 0xff0000ff);
+				buffer.cmdBindDepthState(depthState);
+				buffer.cmdSetDepthBiasEnable(true);
+				// One coarse map over the whole frustum -> far-cascade-sized texels, so
+				// start from the largest cascade bias (tunable).
+				buffer.cmdSetDepthBias(kCascadeDepthBiasConstant[kNumCascades - 1], kCascadeDepthBiasSlope[kNumCascades - 1]);
+				buffer.cmdBindVertexBuffer(0, vertexBuffer, 0);
+				buffer.cmdPushConstants(bindings);
+				buffer.cmdBindIndexBuffer(indexBuffer, lvk::IndexFormat_UI32);
+				buffer.cmdDrawIndexed((uint32_t)indexData.size());
+				buffer.cmdPopDebugGroupLabel();
+			}
+			buffer.cmdEndRendering();
+			buffer.cmdTransitionToShaderReadOnly({ shadowContinuousTexture }, {});
+		}
+		else
 		for (uint32_t i = 0; i < kNumCascades; i++)
 		{
 			const UniformsPerFrameShadow perFrameShadow{
@@ -824,6 +915,14 @@ int main(int argc, char* argv[])
 		                       if (key == GLFW_KEY_P && pressed)
 		                       {
 			                       showPerfStats = !showPerfStats;
+		                       }
+		                       if (key == GLFW_KEY_C && pressed)
+		                       {
+			                       useContinuousShadow = !useContinuousShadow;
+		                       }
+		                       if (key == GLFW_KEY_F && pressed)
+		                       {
+			                       usePCF = !usePCF;
 		                       }
 		                       if (key == GLFW_KEY_W)
 		                       {
