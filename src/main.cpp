@@ -34,7 +34,7 @@ constexpr int32_t kWindowHeight = 1080;
 constexpr glm::vec4 kAmbientColor = glm::vec4(0.82f, 0.92f, 0.98f, 1.0f);
 constexpr uint32_t kNumCascades = 4;
 constexpr float kCascadeSplitLambda = 0.95f;
-constexpr uint32_t kShadowMapSize = 512;
+constexpr uint32_t kShadowMapSize = 4096;
 // Per-cascade hardware rasterizer depth bias, applied while rendering each cascade
 // into its depth map. Index 0 is the nearest (tightest) cascade; farther cascades
 // cover more world space per shadow texel and need progressively more bias to stay
@@ -42,7 +42,7 @@ constexpr uint32_t kShadowMapSize = 512;
 // starting points and meant to be tuned (Z_F32 may want larger values than UNORM).
 constexpr float kCascadeDepthBiasConstant[kNumCascades] = { 1.25f, 1.75f, 2.5f, 3.5f };
 constexpr float kCascadeDepthBiasSlope[kNumCascades] = { 1.75f, 2.0f, 2.75f, 3.5f };
-const glm::vec3 kLightDir = glm::normalize(glm::vec3(0.5f, -1.0f, 0.3f));
+const glm::vec3 kLightDir = glm::normalize(glm::vec3(1.0f, -1.0f, 0.0f));
 
 #if defined(NDEBUG)
 constexpr bool kEnableValidationLayers = false;
@@ -78,6 +78,7 @@ lvk::Holder<lvk::ShaderModuleHandle> shaderMeshWireframeVert;
 lvk::Holder<lvk::ShaderModuleHandle> shaderMeshWireframeFrag;
 lvk::Holder<lvk::ShaderModuleHandle> shaderShadowVert;
 lvk::Holder<lvk::ShaderModuleHandle> shaderShadowFrag;
+lvk::Holder<lvk::ShaderModuleHandle> shaderContinuousShadowVert;
 lvk::Holder<lvk::ShaderModuleHandle> shaderFullscreenVert;
 lvk::Holder<lvk::ShaderModuleHandle> shaderFullscreenFrag;
 
@@ -85,6 +86,7 @@ lvk::Holder<lvk::RenderPipelineHandle> pipelineMesh;
 lvk::Holder<lvk::RenderPipelineHandle> pipelineMeshNormals;
 lvk::Holder<lvk::RenderPipelineHandle> pipelineMeshWireframe;
 lvk::Holder<lvk::RenderPipelineHandle> pipelineShadow;
+lvk::Holder<lvk::RenderPipelineHandle> pipelineContinuousShadow;
 lvk::Holder<lvk::RenderPipelineHandle> pipelineFullscreen;
 
 lvk::Holder<lvk::BufferHandle> vertexBuffer;
@@ -92,6 +94,7 @@ lvk::Holder<lvk::BufferHandle> indexBuffer;
 lvk::Holder<lvk::BufferHandle> materialsBuffer;
 lvk::Holder<lvk::BufferHandle> perFrameBuffer;
 lvk::Holder<lvk::BufferHandle> perFrameShadowBuffer;
+lvk::Holder<lvk::BufferHandle> perFrameContinuousShadowBuffer;
 lvk::Holder<lvk::BufferHandle> perObjectBuffer;
 lvk::Holder<lvk::SamplerHandle> samplerLinear;
 lvk::Holder<lvk::SamplerHandle> samplerShadow;
@@ -110,6 +113,7 @@ bool showPerfStats = true;
 bool drawNormals = false;
 bool useContinuousShadow = false;
 bool usePCF = true;
+bool showShadowChecker = false;
 
 struct UniformsPerFrame
 {
@@ -124,14 +128,25 @@ struct UniformsPerFrame
 	uint32_t shadowMode = 0; // 0 = discrete CSM, 1 = continuous single map
 	glm::vec4 ambientColor = kAmbientColor;
 	glm::vec4 lightDir = {};
-	glm::mat4 continuousLightMatrix = glm::mat4(1.0f);
-	uint32_t pcfEnabled = 1; // 0 = single hardware-compare tap, 1 = 3x3 PCF
+	glm::mat4 continuousLightViewProj = glm::mat4(1.0f); // raw light proj*view (NDC), no scale-bias
+	glm::vec4 continuousWarpParams = {};                 // x = aNear, y = aFar, z = wNear, w = wFar
+	float continuousWarpRatio = 0.0f;                    // far / near (logarithmic depth)
+	uint32_t pcfEnabled = 1;     // 0 = single hardware-compare tap, 1 = 3x3 PCF
+	uint32_t shadowChecker = 0;  // 1 = overlay shadow-texel checkerboard (discrete + continuous)
+	uint32_t checkerTexels = 32; // shadow-map texels per checkerboard square
 } perFrameUniforms;
 
 struct UniformsPerFrameShadow
 {
 	glm::mat4 proj;
 	glm::mat4 view;
+};
+
+struct UniformsPerFrameContinuousShadow
+{
+	glm::mat4 lightViewProj;
+	glm::vec4 warpParams;  // x = aNear, y = aFar, z = wNear, w = wFar
+	float warpRatio;       // far / near
 };
 
 struct UniformsPerObject
@@ -172,6 +187,12 @@ bool init(lvk::LVKwindow* window)
 	    .storage = lvk::StorageType_HostVisible,
 	    .size = sizeof(UniformsPerFrameShadow),
 	    .debugName = "Buffer: uniforms (per frame shadow)",
+	});
+	perFrameContinuousShadowBuffer = context->createBuffer({
+	    .usage = lvk::BufferUsageBits_Uniform,
+	    .storage = lvk::StorageType_HostVisible,
+	    .size = sizeof(UniformsPerFrameContinuousShadow),
+	    .debugName = "Buffer: uniforms (per frame continuous shadow)",
 	});
 	perObjectBuffer = context->createBuffer({
 	    .usage = lvk::BufferUsageBits_Uniform,
@@ -251,6 +272,7 @@ void destroy()
 	materialsBuffer = nullptr;
 	perFrameBuffer = nullptr;
 	perFrameShadowBuffer = nullptr;
+	perFrameContinuousShadowBuffer = nullptr;
 	perObjectBuffer = nullptr;
 	shaderMeshVert = nullptr;
 	shaderMeshFrag = nullptr;
@@ -258,12 +280,14 @@ void destroy()
 	shaderMeshWireframeFrag = nullptr;
 	shaderShadowVert = nullptr;
 	shaderShadowFrag = nullptr;
+	shaderContinuousShadowVert = nullptr;
 	shaderFullscreenVert = nullptr;
 	shaderFullscreenFrag = nullptr;
 	pipelineMesh = nullptr;
 	pipelineMeshNormals = nullptr;
 	pipelineMeshWireframe = nullptr;
 	pipelineShadow = nullptr;
+	pipelineContinuousShadow = nullptr;
 	pipelineFullscreen = nullptr;
 	textureDummyWhite = nullptr;
 	textures.clear();
@@ -316,6 +340,8 @@ void createPipelines()
 	    context->createShaderModule({ kCodeFS_Wireframe, lvk::Stage_Frag, "Shader Module: main wireframe (frag)" });
 	shaderShadowVert = context->createShaderModule({ kShadowVS, lvk::Stage_Vert, "Shader Module: shadow (vert)" });
 	shaderShadowFrag = context->createShaderModule({ kShadowFS, lvk::Stage_Frag, "Shader Module: shadow (frag)" });
+	shaderContinuousShadowVert =
+	    context->createShaderModule({ kContinuousShadowVS, lvk::Stage_Vert, "Shader Module: continuous shadow (vert)" });
 	shaderFullscreenVert =
 	    context->createShaderModule({ kCodeFullscreenVS, lvk::Stage_Vert, "Shader Module: fullscreen (vert)" });
 	shaderFullscreenFrag =
@@ -357,6 +383,17 @@ void createPipelines()
 	        .depthFormat = lvk::Format_Z_F32,
 	        .cullMode = lvk::CullMode_None,
 	        .debugName = "Pipeline: shadow",
+	    },
+	    nullptr);
+
+	pipelineContinuousShadow = context->createRenderPipeline(
+	    lvk::RenderPipelineDesc{
+	        .vertexInput = vertexInputPositionOnly,
+	        .smVert = shaderContinuousShadowVert,
+	        .smFrag = shaderShadowFrag,
+	        .depthFormat = lvk::Format_Z_F32,
+	        .cullMode = lvk::CullMode_None,
+	        .debugName = "Pipeline: continuous shadow",
 	    },
 	    nullptr);
 
@@ -454,13 +491,14 @@ void render(double delta)
 
 		ImGui::Begin("Keyboard Hints:", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNavInputs);
 		ImGui::Text("W/S/A/D - Camera Movement");
-		ImGui::Text("Q/E - Camera Up/Down");
+		ImGui::Text("E/Q - Camera Up/Down");
 		ImGui::Text("Shift - Fast Movement");
 		ImGui::Text("N - Toggle Normals");
 		ImGui::Text("T - Toggle Wireframe");
 		ImGui::Text("P - Show Performance Stats");
 		ImGui::Text("C - Continuous Shadow (%s)", useContinuousShadow ? "ON" : "OFF");
 		ImGui::Text("F - PCF Filtering (%s)", usePCF ? "ON" : "OFF");
+		ImGui::Text("V - Shadow Texel Checker (%s)", showShadowChecker ? "ON" : "OFF");
 		ImGui::End();
 
 		if (uint32_t materialsRemaining = remainingMaterialsToLoad.load(std::memory_order_acquire))
@@ -576,11 +614,9 @@ void render(double delta)
 		lastSplitDist = splitDist;
 	}
 
-	// Single light-space shadow map fit to the whole camera frustum (continuous path,
-	// checkpoint 1a: no warp yet). Same sphere-fit + texel-snap stabilization as a
-	// cascade, but covering the entire near->far range as one map.
-	glm::mat4 continuousLightProj;
-	glm::mat4 continuousLightView;
+	// Single light-space shadow map fit to the whole camera frustum (continuous path).
+	// Same sphere-fit + texel-snap stabilization as a cascade, but covering the entire
+	// near->far range as one map; the per-vertex log warp redistributes texel density.
 	{
 		glm::vec3 frustumCorners[8] = {
 			{ -1.0f, 1.0f, 0.0f }, { 1.0f, 1.0f, 0.0f }, { 1.0f, -1.0f, 0.0f }, { -1.0f, -1.0f, 0.0f },
@@ -606,9 +642,16 @@ void render(double delta)
 		}
 		radius = std::ceil(radius * 16.0f) / 16.0f;
 
-		const glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
-		continuousLightView = glm::lookAt(center - lightDir * radius, center, up);
-		continuousLightProj = glm::ortho(-radius, radius, -radius, radius, 0.0f, 2.0f * radius);
+		// Roll the shadow map so near->far maps to the texture's vertical axis: use the
+		// camera-forward component perpendicular to the light. Its magnitude is sin(angle
+		// between view and light), so it shrinks smoothly to zero as the view aligns with
+		// the light (where shadows are barely visible anyway) instead of snapping. Depth
+		// stays along the light (lookAt forward = lightDir). Only undefined at the exact
+		// view==light alignment (measure-zero; needs a small regularization to be robust).
+		const glm::vec3 camForward = -glm::vec3(view[0][2], view[1][2], view[2][2]);
+		const glm::vec3 up = glm::normalize(camForward - glm::dot(camForward, lightDir) * lightDir);
+		glm::mat4 continuousLightView = glm::lookAt(center - lightDir * radius, center, up);
+		glm::mat4 continuousLightProj = glm::ortho(-radius, radius, -radius, radius, 0.0f, 2.0f * radius);
 
 		const glm::mat4 shadowMatrix = continuousLightProj * continuousLightView;
 		glm::vec4 shadowOrigin = shadowMatrix * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
@@ -619,12 +662,38 @@ void render(double delta)
 		continuousLightProj[3][0] += roundOffset.x;
 		continuousLightProj[3][1] += roundOffset.y;
 
-		perFrameUniforms.continuousLightMatrix = scaleBias * continuousLightProj * continuousLightView;
+		const glm::mat4 continuousLightViewProj = continuousLightProj * continuousLightView;
+
+		// Frustum footprint in light NDC. The map is camera-aligned, so near->far is the
+		// vertical (y) axis and lateral is x: aNear/aFar = near/far center y, wNear/wFar =
+		// x half-widths. frustumCorners[0..3] = near plane, [4..7] = far plane (world).
+		float aNear = 0.0f;
+		float aFar = 0.0f;
+		float wNear = 0.0f;
+		float wFar = 0.0f;
+		for (uint32_t j = 0; j < 4; j++)
+		{
+			const glm::vec4 ln = continuousLightViewProj * glm::vec4(frustumCorners[j], 1.0f);
+			const glm::vec4 lf = continuousLightViewProj * glm::vec4(frustumCorners[j + 4], 1.0f);
+			const glm::vec2 n = glm::vec2(ln) / ln.w;
+			const glm::vec2 f = glm::vec2(lf) / lf.w;
+			aNear += n.y;
+			aFar += f.y;
+			wNear = glm::max(wNear, std::abs(n.x));
+			wFar = glm::max(wFar, std::abs(f.x));
+		}
+		aNear *= 0.25f;
+		aFar *= 0.25f;
+
+		perFrameUniforms.continuousLightViewProj = continuousLightViewProj;
+		perFrameUniforms.continuousWarpParams = glm::vec4(aNear, aFar, wNear, wFar);
+		perFrameUniforms.continuousWarpRatio = farClip / nearClip;
 	}
 
 	perFrameUniforms.texShadowContinuous = shadowContinuousTexture.index();
 	perFrameUniforms.shadowMode = useContinuousShadow ? 1u : 0u;
 	perFrameUniforms.pcfEnabled = usePCF ? 1u : 0u;
+	perFrameUniforms.shadowChecker = showShadowChecker ? 1u : 0u;
 
 	perFrameUniforms.proj = proj;
 	perFrameUniforms.view = view;
@@ -658,14 +727,23 @@ void render(double delta)
 
 		if (useContinuousShadow)
 		{
-			const UniformsPerFrameShadow perFrameShadow{
-				.proj = continuousLightProj,
-				.view = continuousLightView,
+			const UniformsPerFrameContinuousShadow perFrameShadow{
+				.lightViewProj = perFrameUniforms.continuousLightViewProj,
+				.warpParams = perFrameUniforms.continuousWarpParams,
+				.warpRatio = perFrameUniforms.continuousWarpRatio,
 			};
-			buffer.cmdUpdateBuffer(perFrameShadowBuffer, 0, sizeof(perFrameShadow), &perFrameShadow);
+			buffer.cmdUpdateBuffer(perFrameContinuousShadowBuffer, 0, sizeof(perFrameShadow), &perFrameShadow);
+			const struct
+			{
+				uint64_t perFrame;
+				uint64_t perObject;
+			} continuousBindings = {
+				.perFrame = context->gpuAddress(perFrameContinuousShadowBuffer),
+				.perObject = context->gpuAddress(perObjectBuffer),
+			};
 			buffer.cmdBeginRendering(renderPassShadow, framebufferShadowContinuous);
 			{
-				buffer.cmdBindRenderPipeline(pipelineShadow);
+				buffer.cmdBindRenderPipeline(pipelineContinuousShadow);
 				buffer.cmdPushDebugGroupLabel("Render Shadows (continuous)", 0xff0000ff);
 				buffer.cmdBindDepthState(depthState);
 				buffer.cmdSetDepthBiasEnable(true);
@@ -673,7 +751,7 @@ void render(double delta)
 				// start from the largest cascade bias (tunable).
 				buffer.cmdSetDepthBias(kCascadeDepthBiasConstant[kNumCascades - 1], kCascadeDepthBiasSlope[kNumCascades - 1]);
 				buffer.cmdBindVertexBuffer(0, vertexBuffer, 0);
-				buffer.cmdPushConstants(bindings);
+				buffer.cmdPushConstants(continuousBindings);
 				buffer.cmdBindIndexBuffer(indexBuffer, lvk::IndexFormat_UI32);
 				buffer.cmdDrawIndexed((uint32_t)indexData.size());
 				buffer.cmdPopDebugGroupLabel();
@@ -924,6 +1002,10 @@ int main(int argc, char* argv[])
 		                       {
 			                       usePCF = !usePCF;
 		                       }
+		                       if (key == GLFW_KEY_V && pressed)
+		                       {
+			                       showShadowChecker = !showShadowChecker;
+		                       }
 		                       if (key == GLFW_KEY_W)
 		                       {
 			                       camera.movement.forward = pressed;
@@ -942,11 +1024,11 @@ int main(int argc, char* argv[])
 		                       }
 		                       if (key == GLFW_KEY_Q)
 		                       {
-			                       camera.movement.up = pressed;
+			                       camera.movement.down = pressed;
 		                       }
 		                       if (key == GLFW_KEY_E)
 		                       {
-			                       camera.movement.down = pressed;
+			                       camera.movement.up = pressed;
 		                       }
 		                       if (mods & GLFW_MOD_SHIFT)
 		                       {

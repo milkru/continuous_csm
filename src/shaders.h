@@ -1,5 +1,25 @@
 #pragma once
 
+// Shared continuous-shadow warp. The shadow map is camera-aligned, so near->far is the
+// texture's vertical (+y) axis and lateral is x. That makes the warp separable -- no
+// orientation vectors needed:
+//   y: logarithmic depth distribution = log(z/near)/log(far/near) (texel density
+//      ~ 1/depth, the same falloff as CSM's log splits). tlin is linear in depth, so
+//      z/near = 1 + tlin*(ratio-1) with ratio = far/near.
+//   x: divide by the frustum half-width at this depth (the perspective x/z fill, so the
+//      narrow near slice stretches wide)
+// It's a pure function of light-NDC position -> a bijection -> occlusion is preserved.
+// Params come straight from the frustum footprint: aNear/aFar = near/far center y,
+// wNear/wFar = x half-widths at near/far. Applied identically in caster VS and lookup.
+#define WARP_LIGHT_NDC_GLSL R"(
+vec2 warpLightNDC(vec2 p, float aNear, float aFar, float wNear, float wFar, float ratio) {
+  float tlin = clamp((p.y - aNear) / (aFar - aNear), 0.0, 1.0); // 0 near .. 1 far
+  float oy   = log(1.0 + tlin * (ratio - 1.0)) / log(ratio) * 2.0 - 1.0; // logarithmic depth
+  float ox   = p.x / max(mix(wNear, wFar, tlin), 1e-4);                  // lateral fill
+  return vec2(ox, oy);
+}
+)"
+
 const char* kCodeVS = R"(
 layout (location=0) in vec3 pos;
 layout (location=1) in vec2 uv;
@@ -27,7 +47,9 @@ layout(std430, buffer_reference) readonly buffer PerFrame {
   uint shadowMode;
   vec4 ambientColor;
   vec4 lightDir;
-  mat4 continuousLightMatrix;
+  mat4 continuousLightViewProj;
+  vec4 continuousWarpParams;  // x = aNear, y = aFar, z = wNear, w = wFar
+  float continuousWarpRatio;  // far / near (logarithmic depth)
   uint pcfEnabled;
 };
 
@@ -125,8 +147,12 @@ layout(std430, buffer_reference) readonly buffer PerFrame {
   uint shadowMode;
   vec4 ambientColor;
   vec4 lightDir;
-  mat4 continuousLightMatrix;
+  mat4 continuousLightViewProj;
+  vec4 continuousWarpParams;  // x = aNear, y = aFar, z = wNear, w = wFar
+  float continuousWarpRatio;  // far / near (logarithmic depth)
   uint pcfEnabled;
+  uint shadowChecker;  // 1 = overlay shadow-texel checkerboard
+  uint checkerTexels;  // shadow-map texels per checkerboard square
 };
 
 struct Material {
@@ -162,13 +188,20 @@ float PCF3(uint texId, vec3 uvw) {
       shadow += textureBindless2DShadow(texId, pc.perFrame.samplerShadow0, uvw + size * vec3(u, v, 0));
   return shadow / 9.0;
 }
-
-float shadow(vec3 worldPos, float viewZ) {
+)" WARP_LIGHT_NDC_GLSL R"(
+float shadow(vec3 worldPos, float viewZ, out vec3 checkerTint) {
   uint texId;
   vec4 sc;
+  checkerTint = vec3(1.0);         // multiplied onto the lit scene (vec3(1) = no tint)
   if (pc.perFrame.shadowMode == 1u) {
-    // Continuous: a single light-space shadow map fit to the whole frustum.
-    sc = pc.perFrame.continuousLightMatrix * vec4(worldPos, 1.0);
+    // Continuous: single light-space map fit to the frustum, with the depth-axis
+    // log warp applied (same function used by the continuous shadow VS).
+    vec4 lp = pc.perFrame.continuousLightViewProj * vec4(worldPos, 1.0);
+    vec2 warped = warpLightNDC(lp.xy / lp.w,
+        pc.perFrame.continuousWarpParams.x, pc.perFrame.continuousWarpParams.y,
+        pc.perFrame.continuousWarpParams.z, pc.perFrame.continuousWarpParams.w,
+        pc.perFrame.continuousWarpRatio);
+    sc = vec4(warped * 0.5 + 0.5, lp.z / lp.w, 1.0);
     texId = pc.perFrame.texShadowContinuous;
   } else {
     // Discrete CSM: pick the cascade by view-space depth.
@@ -184,6 +217,33 @@ float shadow(vec3 worldPos, float viewZ) {
   // Acne is handled by hardware slope-scaled depth bias baked into the shadow map
   // during the depth pass, so no constant bias is needed here.
   vec3 uvw = vec3(sc.x, 1.0 - sc.y, sc.z);
+  // Shadow-texel checkerboard debug overlay. The checker pattern is sized in shadow-map
+  // texels (each square spans `checkerTexels` texels) and tinted by the world-space size
+  // of a shadow texel on a green(fine)->red(coarse) scale. Discrete CSM has a constant
+  // texel size per cascade -> one colour per cascade; the continuous map's log warp
+  // varies it per fragment -> a smooth gradient on the same colour key.
+  if (pc.perFrame.shadowChecker == 1u) {
+    float texSize = float(textureBindlessSize2D(texId).x);
+    // World-space size of one shadow texel at this fragment, recovered from screen-space
+    // derivatives: (world units / pixel) / (shadow texels / pixel) = world units / texel.
+    // The camera projection cancels, so it's distance-independent and works the same for
+    // the discrete cascades (near-constant per cascade) and the continuous warp (per pixel).
+    float worldPerPixel = length(fwidth(worldPos));
+    float texelPerPixel = length(fwidth(uvw.xy * texSize));
+    float worldTexel = worldPerPixel / max(texelPerPixel, 1e-6);
+    // Green (fine) -> red (coarse) on a log2 scale. Bounds are in world units per texel and
+    // are scene-scale dependent: tune these if the scene skews all-green or all-red.
+    const float kGreenWorldTexel = 0.015;  // <= this reads green
+    const float kRedWorldTexel   = 0.2;    // >= this reads red
+    float t = clamp((log2(worldTexel) - log2(kGreenWorldTexel))
+                    / (log2(kRedWorldTexel) - log2(kGreenWorldTexel)), 0.0, 1.0);
+    // green -> yellow -> red, kept at full brightness through the middle for legibility.
+    vec3 color = (t < 0.5) ? mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0), t * 2.0)
+                           : mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), t * 2.0 - 1.0);
+    vec2 cell = floor(uvw.xy * texSize / float(pc.perFrame.checkerTexels));
+    float dim = mod(cell.x + cell.y, 2.0) < 1.0 ? 1.0 : 0.5;
+    checkerTint = color * dim;
+  }
   float shadowSample = (pc.perFrame.pcfEnabled == 1u)
     ? PCF3(texId, uvw)
     : textureBindless2DShadow(texId, pc.perFrame.samplerShadow0, uvw);
@@ -203,9 +263,11 @@ void main() {
   float NdotL = clamp(dot(n, L), 0.0, 1.0);
   const vec4 f0 = vec4(0.04);
   vec4 diffuse = NdotL * pc.perFrame.ambientColor * Kd * (vec4(1.0) - f0);
+  vec3 checkerTint = vec3(1.0);
   out_FragColor = bDrawNormals ?
     vec4(0.5 * (n+vec3(1.0)), 1.0) :
-    Ka + diffuse * shadow(vtx.worldPos.xyz, vtx.worldPos.w);
+    Ka + diffuse * shadow(vtx.worldPos.xyz, vtx.worldPos.w, checkerTint);
+  out_FragColor.rgb *= checkerTint;
 };
 )";
 
@@ -241,6 +303,36 @@ void main() {
 const char* kShadowFS = R"(
 void main() {
 };
+)";
+
+const char* kContinuousShadowVS = R"(
+layout (location=0) in vec3 pos;
+
+layout(std430, buffer_reference) readonly buffer PerFrame {
+  mat4 lightViewProj;
+  vec4 warpParams;  // x = aNear, y = aFar, z = wNear, w = wFar
+  float warpRatio;  // far / near
+};
+
+layout(std430, buffer_reference) readonly buffer PerObject {
+  mat4 model;
+};
+
+layout(push_constant) uniform constants {
+  PerFrame perFrame;
+  PerObject perObject;
+} pc;
+)" WARP_LIGHT_NDC_GLSL R"(
+void main() {
+  vec4 worldPos = pc.perObject.model * vec4(pos, 1.0);
+  vec4 lp = pc.perFrame.lightViewProj * worldPos;          // ortho -> w = 1
+  vec2 warped = warpLightNDC(lp.xy / lp.w,
+      pc.perFrame.warpParams.x, pc.perFrame.warpParams.y,
+      pc.perFrame.warpParams.z, pc.perFrame.warpParams.w, pc.perFrame.warpRatio);
+  gl_Position = vec4(warped, lp.z, 1.0);
+  // Pancaking: flatten casters in front of the near plane onto it (see kShadowVS).
+  gl_Position.z = max(gl_Position.z, 0.0);
+}
 )";
 
 const char* kCodeFullscreenVS = R"(

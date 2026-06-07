@@ -433,6 +433,72 @@ and full position reconstruction would be required.
 
 ---
 
+## Axis Projectivity
+
+The warp is separable into two axes:
+
+```text
+lateral = x / depth   (perspective, x/z)
+depth   = log(depth)
+```
+
+Lateral is projective: it preserves straight lines, and because the receiver
+evaluates the warp analytically per fragment, it yields uniform horizontal texel
+density on screen.
+
+Depth is non-projective: `log` cannot be expressed as a homogeneous divide, so it
+curves straight lines.
+
+Hardware limit:
+
+```text
+one homogeneous w  ->  only one axis can be projective
+```
+
+Routing the lateral through `w` makes it exact, but the depth axis must then share
+that `w` and is no longer exact (it gets perspective-interpolated, not log). So in
+hardware at most one axis is straight; the other curves.
+
+Current prototype does the lateral divide by hand (`w = 1`), so both axes curve in
+the stored map. On-screen density stays uniform regardless (receiver is analytic);
+only the caster's stored edges curve, causing minor edge artifacts.
+
+Software rasterization removes the conflict entirely:
+
+```text
+per-pixel inverse_warp  ->  exact coverage and depth, both axes
+```
+
+No rasterizer interpolation means exact perspective lateral and exact log depth at
+once, with no curving and no shared-w trade. Both properties come for free.
+
+### Rasterization cost
+
+The straight lateral also shrinks the curved-rasterization cost (the gap between
+regular and curved software raster). Iterate the shadow map by rows of constant
+depth:
+
+```text
+per row:     one nonlinear depth inverse (pow)
+within row:  depth is constant -> lateral inverse x = u * width(depth) is linear in u
+             -> regular incremental edge stepping, no per-pixel inverse_warp
+```
+
+So the inner loop is an ordinary straight-edge scanline rasterizer; the only curved
+cost is one solve per scanline.
+
+```text
+both axes non-projective:  inverse_warp per pixel   (~N^2 solves)
+projective lateral:        depth inverse per row     (~N solves) + regular inner loop
+```
+
+Projectivity is what unlocks this: linear u <-> x within a row makes the edge
+functions linear, so they step incrementally. A non-projective lateral (e.g.
+u = sqrt(x / width)) is nonlinear in u even within a row, forcing per-pixel inverse
+warp again.
+
+---
+
 ## Future Investigation
 
 The current approach uses:
